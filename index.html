@@ -2234,6 +2234,1085 @@ function ratingTiles(r, silly) {
     el('div', null, el('small', null, 'Overall'), el('b', { class: 'stars', style: 'font-size:22px;line-height:44px' }, starsStr(r.stars)), el('small', null, r.stars.toFixed(1) + ' stars'), silly ? el('div', null, el('span', { class: 'tag silly' }, 'SILLY')) : null));
 }
 
+
+/* =====================================================================
+   FREE CAMERA — orbit / pan / zoom
+   ===================================================================== */
+const Cam = {
+  target: new V3(0, 6, 0), yaw: 0.9, pitch: 0.48, dist: 190, keys: {}, goal: null,
+  sens() { return Settings.d.camSens || 1; },
+  fwd() { return new V3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)); },
+  right() { return new V3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)); },
+  orbit(dx, dy) { this.goal = null; this.yaw -= dx * 0.005 * this.sens(); this.pitch = clamp(this.pitch + dy * 0.005 * this.sens() * (Settings.d.invertOrbit ? -1 : 1), 0.03, 1.53); },
+  pan(dx, dy) { this.goal = null; const s = this.dist * 0.0016 * this.sens(); this.target.addScaledVector(this.right(), -dx * s).addScaledVector(this.fwd(), dy * s); this.clampTarget(); },
+  zoom(f) { this.dist = clamp(this.dist * f, 3, 1600); },
+  clampTarget() { this.target.x = clamp(this.target.x, -600, 600); this.target.z = clamp(this.target.z, -600, 600); this.target.y = clamp(this.target.y, -20, 900); },
+  focus(p, dist) { this.goal = { p: p.clone(), d: dist || this.dist }; },
+  update(dt) {
+    const k = this.keys, sp = Math.max(20, this.dist) * 0.9 * dt * (k.shift ? 2.5 : 1) * this.sens();
+    if (k.w || k.arrowup) { this.target.addScaledVector(this.fwd(), sp); this.goal = null; }
+    if (k.s || k.arrowdown) { this.target.addScaledVector(this.fwd(), -sp); this.goal = null; }
+    if (k.a || k.arrowleft) { this.target.addScaledVector(this.right(), -sp); this.goal = null; }
+    if (k.d || k.arrowright) { this.target.addScaledVector(this.right(), sp); this.goal = null; }
+    if (k.q) this.yaw += 1.6 * dt * this.sens(); if (k.e) this.yaw -= 1.6 * dt * this.sens();
+    if (k.r) this.zoom(1 - dt * 1.5); if (k.f && !k.ctrl) this.zoom(1 + dt * 1.5);
+    if (this.goal) {
+      const a = 1 - Math.exp(-dt * 6);
+      this.target.lerp(this.goal.p, a); this.dist = lerp(this.dist, this.goal.d, a);
+      if (this.target.distanceTo(this.goal.p) < 0.05) this.goal = null;
+    }
+    this.clampTarget();
+  },
+  apply(cam) {
+    const cp = Math.cos(this.pitch);
+    cam.position.set(this.target.x + Math.sin(this.yaw) * cp * this.dist, this.target.y + Math.sin(this.pitch) * this.dist, this.target.z + Math.cos(this.yaw) * cp * this.dist);
+    const gy = Terrain.groundAt(cam.position.x, cam.position.z) + 1.5;
+    if (cam.position.y < gy) cam.position.y = gy;
+    cam.up.set(0, 1, 0); cam.lookAt(this.target);
+    if (cam.fov !== 60) { cam.fov = 60; cam.updateProjectionMatrix(); }
+  }
+};
+
+/* =====================================================================
+   EDITOR
+   ===================================================================== */
+const ELEMENTS = [
+  { id: 'straight', name: 'Straight', icon: '━', fn: (b, s) => b.straight(20 * s) },
+  { id: 'lift', name: 'Lift Hill', icon: '⛓', fn: (b, s) => b.liftHill(30 * s, 40) },
+  { id: 'drop', name: 'Drop', icon: '⤵', fn: (b, s) => b.dropTo(Math.max(Terrain.groundAt(b.p.x, b.p.z) + 3, b.p.y - 40 * s), 55, 3.3) },
+  { id: 'hill', name: 'Airtime Hill', icon: '⌒', fn: (b, s) => b.airHill(Math.max(3, Math.min(14 * s, b.E / (2 * b.g) - 4)), -0.15) },
+  { id: 'turn', name: 'Turn 90°', icon: '↱', fn: (b, s, d) => b.autoTurn(90 * d, 1.5 / Math.sqrt(s)) },
+  { id: 'uturn', name: 'Turnaround', icon: '↶', fn: (b, s, d) => b.autoTurn(180 * d, 1.5 / Math.sqrt(s)) },
+  { id: 'helix', name: 'Helix', icon: '🌀', fn: (b, s, d) => b.autoHelix(1, d, 0) },
+  { id: 'loop', name: 'Vertical Loop', icon: '➰', fn: (b, s, d) => b.autoLoop(d, s) },
+  { id: 'cork', name: 'Corkscrew', icon: '🌪', fn: (b, s, d) => b.corkscrew(d) },
+  { id: 'zerog', name: 'Zero-G Roll', icon: '↻', fn: (b, s, d) => b.zeroG(d) },
+  { id: 'climb', name: 'Climb', icon: '⟋', fn: (b, s) => b.drop(24 * s, 8 * s, { k: 3 }) },
+  { id: 'dive', name: 'Dive', icon: '⟍', fn: (b, s) => b.drop(24 * s, -Math.min(8 * s, b.p.y - Terrain.groundAt(b.p.x, b.p.z) - 1.5), { k: 3 }) },
+  { id: 'brake', name: 'Brake Run', icon: '🟧', fn: (b, s) => { b.setPiece('brake', { speed: 6 }); b.straight(24 * s); b.E = 36; } },
+  { id: 'block', name: 'Block Brake', icon: '🟥', fn: (b, s) => { b.setPiece('block', { speed: 2.5 }); b.straight(20); b.E = 6.25; } },
+  { id: 'launch', name: 'Launch Track', icon: '⚡', fn: (b, s) => b.launchTrack(50 * s, 31.3, 2.5) },
+  { id: 'station', name: 'Station', icon: '🏁', fn: (b) => { b.setPiece('station', { speed: 2.5 }); b.straight(28); b.E = 6.25; } },
+  { id: 'accel', name: 'Accelerator', icon: '🚀', silly: true, fn: (b, s) => b.launchTrack(70 * s, 223.5, 0.3, 'accel') }
+];
+const TOOLS = [
+  { id: 'select', icon: '🖐', name: 'Select & Move nodes', key: '1' }, { id: 'add', icon: '✚', name: 'Add node (extends from selection)', key: '2' },
+  { id: 'insert', icon: '⊕', name: 'Insert node on track', key: '3' }, { id: 'delete', icon: '✖', name: 'Delete node', key: '4' },
+  { id: 'terrain', icon: '⛰', name: 'Terrain & water', key: '5' }, { id: 'scenery', icon: '🌲', name: 'Scenery', key: '6' }
+];
+const Editor = {
+  design: null, track: null, group: null, tool: 'select', sel: [], primary: -1, history: [], hidx: -1, clip: null, tab: 'track',
+  brush: { mode: 'raise', radius: 14, strength: 1 }, scen: { type: 'pine', rot: 0 }, wiz: { size: 1, dir: 1 },
+  preview: null, mouse: { x: 0, y: 0 }, drag: null, painting: false, lastHeat: null,
+  init(scene) {
+    this.scene = scene;
+    this.handleMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.95 });
+    this.stemMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthTest: true });
+    this.ghost = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new V3(), new V3(), new V3()]), new THREE.LineDashedMaterial({ color: 0x2ad1c4, dashSize: 1.2, gapSize: 0.8, depthTest: false, transparent: true }));
+    this.ghost.visible = false; this.ghost.renderOrder = 5; scene.add(this.ghost);
+    const rp = []; for (let i = 0; i <= 64; i++) rp.push(new V3());
+    this.ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(rp), new THREE.LineBasicMaterial({ color: 0x2ad1c4, depthTest: false, transparent: true }));
+    this.ring.visible = false; this.ring.renderOrder = 6; scene.add(this.ring);
+    this.warnMark = new THREE.Group();
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(1.4, 3.2, 10), new THREE.MeshBasicMaterial({ color: 0xff3b5c, depthTest: false, transparent: true }));
+    cone.rotation.x = Math.PI; cone.position.y = 5; cone.renderOrder = 7; this.warnMark.add(cone); this.warnMark.visible = false; scene.add(this.warnMark);
+    this.handles = null; this.stems = null;
+    this.buildToolbar(); this.bindUI();
+  },
+  /* ---------- design lifecycle ---------- */
+  load(d) {
+    this.design = d; Scenery.items = d.scenery = d.scenery || [];
+    Terrain.deserialize(d.terrain); Env.load(d.env); Scenery.rebuild();
+    this.sel = []; this.primary = d.nodes.length - 1; this.preview = null; this.lastHeat = null;
+    this.history = []; this.hidx = -1; this.pushHistory();
+    this.rebuild(); this.renderPanel(); this.updateBottomBar();
+    $('#coasterName').value = d.name || '';
+    if (this.track) {
+      const b = this.track.bounds(), c = b.getCenter(new V3()), sz = b.getSize(new V3());
+      Cam.target.copy(c).setY(c.y * 0.4); Cam.dist = clamp(Math.max(sz.x, sz.z) * 0.95 + 40, 60, 700); Cam.goal = null;
+    }
+  },
+  serialize(withTerrain = true) {
+    const d = Design.clone(this.design);
+    d.scenery = Scenery.items.slice(); d.env = Env.json;
+    if (Settings.d.silly) d.sillyBuilt = true;
+    d.terrain = withTerrain ? Terrain.serialize() : (d.terrain && d.terrain.gen != null ? d.terrain : { gen: 7 });
+    d.format = 'skyline-coaster'; d.version = 1;
+    return d;
+  },
+  isSilly() { return Settings.d.silly || (this.design && Design.isSilly(this.design)); },
+  snapshot() {
+    const d = this.design;
+    return { j: JSON.stringify({ nodes: d.nodes, closed: d.closed, style: d.style, cars: d.cars, colors: d.colors, physics: d.physics, rainbow: d.rainbow, scenery: Scenery.items }), h: Terrain.h.slice(), w: Terrain.water };
+  },
+  pushHistory() {
+    this.history.length = this.hidx + 1;
+    this.history.push(this.snapshot()); if (this.history.length > 80) this.history.shift();
+    this.hidx = this.history.length - 1; this.updateUndoButtons();
+  },
+  restore(sn) {
+    const o = JSON.parse(sn.j); Object.assign(this.design, o); Scenery.items = this.design.scenery = o.scenery;
+    let terr = false; if (sn.w !== Terrain.water) terr = true;
+    for (let i = 0; i < sn.h.length && !terr; i += 7) if (sn.h[i] !== Terrain.h[i]) terr = true;
+    if (terr || true) { Terrain.h.set(sn.h); Terrain.water = sn.w; Terrain.update(); }
+    this.sel = this.sel.filter(i => i < this.design.nodes.length); if (this.primary >= this.design.nodes.length) this.primary = this.design.nodes.length - 1;
+    Scenery.rebuild(); this.rebuild(); this.renderPanel();
+  },
+  undo() { if (this.hidx > 0) { this.hidx--; this.restore(this.history[this.hidx]); this.updateUndoButtons(); Sound.blip(500); } },
+  redo() { if (this.hidx < this.history.length - 1) { this.hidx++; this.restore(this.history[this.hidx]); this.updateUndoButtons(); Sound.blip(700); } },
+  updateUndoButtons() { $('#btnUndo').disabled = this.hidx <= 0; $('#btnRedo').disabled = this.hidx >= this.history.length - 1; },
+  commit(rebuildPanel = true) {
+    this.pushHistory(); this.rebuild(); if (rebuildPanel) this.renderPanel();
+    clearTimeout(this._as); this._as = setTimeout(() => this.autosave(), 1500);
+  },
+  autosave() { if (this.design && App.state !== 'menu') Store.set('sky.autosave', this.serialize(true)); },
+  /* ---------- rebuild scene objects ---------- */
+  rebuild(fast) {
+    const d = this.design;
+    this.track = null;
+    if (d.nodes.length >= 2) { const t = new Track(d); if (t.ok) this.track = t; }
+    if (this.group) { this.scene.remove(this.group); disposeObj(this.group); this.group = null; }
+    if (this.track) { this.group = TrackRenderer.build(this.track, d); this.scene.add(this.group); }
+    if (!fast && Train.design !== d) Train.build(d);
+    this.updateHandles();
+    if (Settings.d.heatmap && this.lastHeat && this.group && this.lastHeat.length === this.track.N) TrackRenderer.applyHeat(this.group, this.lastHeat);
+    if (!fast) this.schedulePreview();
+  },
+  schedulePreview() {
+    clearTimeout(this._pt);
+    this._pt = setTimeout(() => {
+      if (!this.track) { this.preview = null; this.updateBottomBar(); this.warnMark.visible = false; return; }
+      const silly = this.isSilly(), st = Sim.headless(this.track, this.design, silly);
+      this.preview = { stats: st, ratings: Ratings.rate(st, silly) };
+      this.lastHeat = st.heat;
+      if (Settings.d.heatmap && this.group) TrackRenderer.applyHeat(this.group, st.heat);
+      if (st.stuckS != null && st.result !== 'complete') {
+        const F = makeFrame(); this.track.frameAt(st.stuckS, F); this.warnMark.position.copy(F.p); this.warnMark.visible = App.state === 'editor';
+      } else this.warnMark.visible = false;
+      this.updateBottomBar(); this.updateChallengeBox();
+      if (this.tab === 'track') this.renderPanel();
+    }, 280);
+  },
+  updateHandles() {
+    const nodes = this.design.nodes, n = nodes.length, show = App.state === 'editor';
+    if (this.handles) { this.scene.remove(this.handles); this.handles.dispose(); }
+    if (this.stems) { this.scene.remove(this.stems); this.stems.geometry.dispose(); }
+    this.handles = new THREE.InstancedMesh(GEO.sph(1, 12, 8), this.handleMat, Math.max(1, n)); this.handles.count = n; this.handles.renderOrder = 8;
+    const m = new THREE.Matrix4(), c = new THREE.Color(), sp = [], s = new V3();
+    const scale = clamp(Cam.dist / 160, 0.55, 2.4);
+    nodes.forEach((nd, i) => {
+      const selected = this.sel.includes(i), prim = i === this.primary;
+      s.setScalar((prim ? 1.25 : selected ? 1.05 : 0.8) * scale);
+      m.compose(_p.set(nd.x, nd.y, nd.z), _q.identity(), s); this.handles.setMatrixAt(i, m);
+      c.set(PIECES[nd.type] ? PIECES[nd.type].color : '#fff'); if (selected) c.lerp(new THREE.Color(0xffffff), prim ? 0.75 : 0.5);
+      this.handles.setColorAt(i, c);
+      sp.push(nd.x, nd.y, nd.z, nd.x, Terrain.groundAt(nd.x, nd.z), nd.z);
+    });
+    if (this.handles.instanceColor) this.handles.instanceColor.needsUpdate = true;
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
+    this.stems = new THREE.LineSegments(g, this.stemMat);
+    this.handles.visible = this.stems.visible = show;
+    this.scene.add(this.handles, this.stems);
+    this.handleScale = scale;
+  },
+  setVisible(v) {
+    if (this.handles) this.handles.visible = v; if (this.stems) this.stems.visible = v;
+    this.ghost.visible = false; this.ring.visible = false; if (!v) this.warnMark.visible = false;
+  },
+  /* ---------- picking ---------- */
+  ray(mx, my) {
+    const rc = new THREE.Raycaster(); rc.setFromCamera(new THREE.Vector2(mx / innerWidth * 2 - 1, -(my / innerHeight) * 2 + 1), R.camera); return rc.ray;
+  },
+  groundAtMouse(mx, my) { const r = this.ray(mx, my); return Terrain.raycast(r.origin, r.direction); },
+  project(x, y, z) { _p.set(x, y, z).project(R.camera); return _p.z > 1 ? null : [(_p.x + 1) / 2 * innerWidth, (1 - _p.y) / 2 * innerHeight]; },
+  pickNode(mx, my, rad = 16) {
+    let best = -1, bd = rad;
+    this.design.nodes.forEach((n, i) => { const p = this.project(n.x, n.y, n.z); if (!p) return; const d = Math.hypot(p[0] - mx, p[1] - my); if (d < bd) { bd = d; best = i; } });
+    return best;
+  },
+  pickTrack(mx, my, rad = 14) {
+    const tr = this.track; if (!tr) return -1; let best = -1, bd = rad;
+    for (let k = 0; k < tr.N; k += 2) { const p = this.project(tr.px[k], tr.py[k], tr.pz[k]); if (!p) continue; const d = Math.hypot(p[0] - mx, p[1] - my); if (d < bd) { bd = d; best = k; } }
+    return best;
+  },
+  snap(v, g) { return Settings.d.snap ? Math.round(v / g) * g : +v.toFixed(2); },
+  headingAt(i) {
+    const nodes = this.design.nodes, tr = this.track;
+    if (tr && tr.ok) {
+      const k = tr.closed ? Math.round(tr.nodeS[i] / tr.ds) % tr.N : clamp(Math.round(tr.nodeS[i] / tr.ds), 0, tr.N - 1);
+      const hx = tr.tx[k], hz = tr.tz[k];
+      if (Math.hypot(hx, hz) > 0.25) return Math.atan2(hz, hx);
+    }
+    const a = nodes[Math.max(0, i - 1)], b = nodes[i];
+    if (a && b && (a.x !== b.x || a.z !== b.z)) return Math.atan2(b.z - a.z, b.x - a.x);
+    return 0;
+  },
+  speedAt(i) {
+    const tr = this.track; if (!tr) return 5;
+    const k = tr.closed ? Math.round(tr.nodeS[i] / tr.ds) % tr.N : clamp(Math.round(tr.nodeS[i] / tr.ds), 0, tr.N - 1);
+    return tr.prof[k] || 5;
+  },
+  /* ---------- editing operations ---------- */
+  setSel(list, prim) { this.sel = [...new Set(list)].sort((a, b) => a - b); this.primary = prim != null ? prim : (this.sel.length ? this.sel[this.sel.length - 1] : -1); this.updateHandles(); if (this.tab === 'node' || this.sel.length) this.showTab('node'); },
+  addNodeAt(p) {
+    const nodes = this.design.nodes, a = this.primary >= 0 ? this.primary : nodes.length - 1, prev = nodes[a];
+    const y = prev ? Math.max(prev.y, Terrain.groundAt(p.x, p.z) + 1) : Terrain.groundAt(p.x, p.z) + 2.5;
+    const nd = newNode(this.snap(p.x, 2), this.snap(y, 0.5), this.snap(p.z, 2));
+    if (prev && Math.hypot(nd.x - prev.x, nd.z - prev.z) < 1) return;
+    nodes.splice(a + 1, 0, nd); this.setSel([a + 1]); this.commit(); Sound.blip(760);
+  },
+  insertAtSample(k) {
+    const tr = this.track, nodes = this.design.nodes, seg = tr.segs[tr.sg[k]];
+    const at = seg.i0 + 1;
+    const nd = newNode(+tr.px[k].toFixed(2), +tr.py[k].toFixed(2), +tr.pz[k].toFixed(2), { roll: +wrapDeg(tr.roll[k]).toFixed(1), type: nodes[seg.i0].type, auto: nodes[seg.i0].auto && nodes[seg.i1].auto });
+    ['speed', 'time'].forEach(f => { if (nodes[seg.i0][f] != null) nd[f] = nodes[seg.i0][f]; });
+    nodes.splice(at, 0, nd); this.setSel([at]); this.commit(); Sound.blip(760);
+  },
+  deleteNodes(list) {
+    const nodes = this.design.nodes; if (!list.length) return;
+    if (nodes.length - list.length < 1) { toast('A coaster needs at least one node', 'bad'); return; }
+    list.slice().sort((a, b) => b - a).forEach(i => nodes.splice(i, 1));
+    this.setSel([], Math.min(nodes.length - 1, Math.max(0, list[0] - 1))); this.commit(); Sound.blip(300);
+  },
+  applyElement(el) {
+    const nodes = this.design.nodes;
+    if (el.silly && !Settings.d.silly) { toast('Enable Silly Mode in Settings to unlock the Accelerator', 'silly'); return; }
+    const a = this.primary >= 0 ? this.primary : nodes.length - 1, base = nodes[a];
+    if (!base) return;
+    const b = new PathBuilder(base.x, base.y, base.z, this.headingAt(a)).setStyle(this.design.style);
+    if (this.design.physics.lowGravity) b.g = G0 * 0.3;
+    const v = this.speedAt(a); b.E = v * v;
+    b.nodes = [Object.assign({}, base)];
+    const size = this.wiz.size * (el.id === 'loop' && Settings.d.silly && this.design.superLoops ? 1 : 1);
+    el.fn(b, size, this.wiz.dir);
+    const created = b.nodes.slice(1);
+    if (!created.length) return;
+    Object.assign(base, { type: b.nodes[0].type, auto: b.nodes[0].auto }, b.nodes[0].speed != null ? { speed: b.nodes[0].speed } : {}, b.nodes[0].time != null ? { time: b.nodes[0].time } : {});
+    nodes.splice(a + 1, 0, ...created);
+    this.setSel([a + created.length]); this.commit(); Sound.blip(880);
+    toast(el.name + ' added (' + created.length + ' nodes)');
+  },
+  copy() {
+    const nodes = this.design.nodes; if (!this.sel.length) { toast('Select nodes to copy (Shift+click selects a range)'); return; }
+    const i0 = this.sel[0], o = nodes[i0], h = this.headingAt(i0), c = Math.cos(-h), s = Math.sin(-h);
+    this.clip = this.sel.map(i => { const n = nodes[i], dx = n.x - o.x, dz = n.z - o.z; return Object.assign({}, n, { x: dx * c - dz * s, y: n.y - o.y, z: dx * s + dz * c }); });
+    toast('Copied ' + this.clip.length + ' node' + (this.clip.length > 1 ? 's' : ''), 'good');
+  },
+  paste() {
+    if (!this.clip) { toast('Nothing copied yet'); return; }
+    const nodes = this.design.nodes, a = this.primary >= 0 ? this.primary : nodes.length - 1, base = nodes[a];
+    const h = this.headingAt(a), c = Math.cos(h), s = Math.sin(h);
+    const ox = base.x + Math.cos(h) * 10, oz = base.z + Math.sin(h) * 10, oy = base.y;
+    const add = this.clip.map(n => Object.assign({}, n, { x: +(ox + n.x * c - n.z * s).toFixed(2), y: +(oy + n.y).toFixed(2), z: +(oz + n.x * s + n.z * c).toFixed(2) }));
+    nodes.splice(a + 1, 0, ...add);
+    this.setSel(add.map((_, k) => a + 1 + k)); this.commit(); toast('Pasted ' + add.length + ' nodes', 'good');
+  },
+  mirror() {
+    const nodes = this.design.nodes; if (nodes.length < 2) return;
+    let list = this.sel.length >= 2 ? this.sel : nodes.map((_, i) => i);
+    let A, B;
+    if (this.sel.length >= 2) { A = nodes[list[0]]; B = nodes[list[list.length - 1]]; }
+    if (!A || !B || Math.hypot(B.x - A.x, B.z - A.z) < 1) {
+      const cx = nodes.reduce((s, n) => s + n.x, 0) / nodes.length;
+      A = { x: cx, z: 0 }; B = { x: cx, z: 1 };
+    }
+    const dx = B.x - A.x, dz = B.z - A.z, l = Math.hypot(dx, dz), mx = -dz / l, mz = dx / l;
+    list.forEach(i => { const n = nodes[i], d = (n.x - A.x) * mx + (n.z - A.z) * mz; n.x = +(n.x - 2 * d * mx).toFixed(2); n.z = +(n.z - 2 * d * mz).toFixed(2); n.roll = -n.roll; });
+    if (list.length === nodes.length) { /* mirroring the whole layout reverses its handedness: nothing else to fix */ }
+    this.commit(); toast(this.sel.length >= 2 ? 'Mirrored ' + list.length + ' nodes' : 'Mirrored the whole track', 'good'); Sound.blip(600);
+  },
+  /* ---------- pointer input ---------- */
+  onDown(e) {
+    const mx = e.clientX, my = e.clientY; this.mouse = { x: mx, y: my };
+    if (e.button !== 0) return false;
+    const nodes = this.design.nodes;
+    switch (this.tool) {
+      case 'select': {
+        const i = this.pickNode(mx, my);
+        if (i >= 0) {
+          if (e.ctrlKey || e.metaKey) { const s = this.sel.includes(i) ? this.sel.filter(x => x !== i) : this.sel.concat(i); this.setSel(s, i); return true; }
+          if (!this.sel.includes(i) && !e.shiftKey) this.setSel([i], i);
+          this.drag = { i, sx: mx, sy: my, moved: false, shift: e.shiftKey, start: this.sel.map(j => ({ j, x: nodes[j].x, y: nodes[j].y, z: nodes[j].z })), base: { x: nodes[i].x, y: nodes[i].y, z: nodes[i].z } };
+        } else if (!e.shiftKey) this.setSel([], this.primary);
+        return true;
+      }
+      case 'add': { const p = this.groundAtMouse(mx, my); if (p) this.addNodeAt(p); return true; }
+      case 'insert': { const k = this.pickTrack(mx, my); if (k >= 0) this.insertAtSample(k); else toast('Click on the track to insert a node'); return true; }
+      case 'delete': { const i = this.pickNode(mx, my); if (i >= 0) this.deleteNodes([i]); return true; }
+      case 'terrain': { const p = this.groundAtMouse(mx, my); if (p) { this.painting = { flatH: Terrain.heightAt(p.x, p.z) }; } return true; }
+      case 'scenery': {
+        const p = this.groundAtMouse(mx, my); if (!p) return true;
+        if (e.shiftKey) { if (Scenery.removeNear(p.x, p.z)) { Scenery.rebuild(); this.commit(false); Sound.blip(300); } return true; }
+        const T = Scenery.TYPES[this.scen.type];
+        if (Scenery.add(this.scen.type, p.x, p.z, T.grid ? 0 : (this.scen.rot ? this.scen.rot * Math.PI / 180 : null))) { Scenery.rebuild(); Sound.blip(820, 0.03); }
+        if (T.paint) this.painting = { scenery: true }; else this.commit(false);
+        return true;
+      }
+    }
+    return false;
+  },
+  onMove(e) {
+    const mx = e.clientX, my = e.clientY; this.mouse = { x: mx, y: my };
+    const nodes = this.design.nodes, info = $('#cursorInfo');
+    if (this.drag) {
+      const dr = this.drag;
+      if (!dr.moved && Math.hypot(mx - dr.sx, my - dr.sy) > 4) dr.moved = true;
+      if (dr.moved) {
+        const b = dr.base; let dx = 0, dy = 0, dz = 0;
+        if (dr.shift || e.altKey) {
+          const camD = R.camera.position.distanceTo(_p.set(b.x, b.y, b.z));
+          dy = this.snap(b.y - (my - dr.sy) * camD * 0.0016, 0.5) - b.y;
+        } else {
+          const r = this.ray(mx, my), plane = new THREE.Plane(UPV, -b.y), hit = new V3();
+          if (r.intersectPlane(plane, hit) && hit.distanceTo(R.camera.position) < 3000) { dx = this.snap(hit.x, 2) - b.x; dz = this.snap(hit.z, 2) - b.z; }
+          else return;
+        }
+        dr.start.forEach(s => { const n = nodes[s.j]; n.x = +(s.x + dx).toFixed(2); n.y = +clamp(s.y + dy, -20, Settings.d.silly ? 1500 : 250).toFixed(2); n.z = +(s.z + dz).toFixed(2); });
+        this.dragDirty = true;
+        const n = nodes[dr.i]; info.classList.remove('hidden'); info.style.left = mx + 'px'; info.style.top = my + 'px';
+        info.textContent = (dr.shift || e.altKey ? '↕ Height ' : '✥ ') + Units.len(n.y - Terrain.groundAt(n.x, n.z), 1) + ' above ground';
+      }
+      return true;
+    }
+    info.classList.add('hidden');
+    // hover helpers
+    this.ghost.visible = false; this.ring.visible = false;
+    if (this.tool === 'add') {
+      const p = this.groundAtMouse(mx, my), a = this.primary >= 0 ? this.primary : nodes.length - 1, prev = nodes[a];
+      if (p && prev) {
+        const y = Math.max(prev.y, Terrain.groundAt(p.x, p.z) + 1), q = new V3(this.snap(p.x, 2), y, this.snap(p.z, 2));
+        this.ghost.geometry.setFromPoints([new V3(prev.x, prev.y, prev.z), q, new V3(q.x, Terrain.groundAt(q.x, q.z), q.z)]);
+        this.ghost.computeLineDistances(); this.ghost.visible = true;
+        info.classList.remove('hidden'); info.style.left = mx + 'px'; info.style.top = my + 'px';
+        info.textContent = 'Click to add · ' + Units.len(Math.hypot(q.x - prev.x, q.z - prev.z)) + ' from node ' + (a + 1);
+      }
+    } else if (this.tool === 'terrain' || this.tool === 'scenery') {
+      const p = this.groundAtMouse(mx, my);
+      if (p) this.placeRing(p, this.tool === 'terrain' ? this.brush.radius : (Scenery.TYPES[this.scen.type].r || 2));
+    }
+    return false;
+  },
+  placeRing(p, r) {
+    const pos = this.ring.geometry.attributes.position;
+    for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI * 2, x = p.x + Math.cos(a) * r, z = p.z + Math.sin(a) * r; pos.setXYZ(i, x, Terrain.groundAt(x, z) + 0.3, z); }
+    pos.needsUpdate = true; this.ring.visible = true;
+    this.ring.material.color.set(this.tool === 'terrain' ? ({ raise: 0x4ee38a, lower: 0xff8a3d, flatten: 0xffc547, smooth: 0x9fb4ff, water: 0x4da3ff }[this.brush.mode]) : 0x2ad1c4);
+  },
+  onUp(e) {
+    if (this.drag) {
+      const dr = this.drag; this.drag = null; $('#cursorInfo').classList.add('hidden');
+      if (dr.moved) { this.dragDirty = false; this.commit(); }
+      else if (dr.shift && this.primary >= 0) { const a = Math.min(this.primary, dr.i), b = Math.max(this.primary, dr.i), l = []; for (let i = a; i <= b; i++) l.push(i); this.setSel(l, dr.i); }
+      else this.setSel([dr.i], dr.i);
+      return true;
+    }
+    if (this.painting) {
+      const sc = this.painting.scenery; this.painting = false;
+      if (!sc) { Scenery.rebuild(); this.rebuild(); } this.commit(false); return true;
+    }
+    return false;
+  },
+  update(dt) {
+    if (this.dragDirty) { this.dragDirty = false; this.rebuild(true); }
+    if (this.painting && !this.painting.scenery) {
+      const p = this.groundAtMouse(this.mouse.x, this.mouse.y);
+      if (p) {
+        Terrain.brush(p.x, p.z, this.brush.mode, this.brush.radius, this.brush.strength, dt, this.painting.flatH); this.placeRing(p, this.brush.radius);
+        this._pa = (this._pa || 0) + dt; if (this._pa > 0.35) { this._pa = 0; this.rebuild(true); Scenery.rebuild(); }
+      }
+    } else if (this.painting && this.painting.scenery) {
+      const p = this.groundAtMouse(this.mouse.x, this.mouse.y);
+      if (p && Scenery.add(this.scen.type, p.x, p.z, 0)) Scenery.rebuild();
+    }
+    // keep node handles a readable size as the camera zooms
+    const s = clamp(Cam.dist / 160, 0.55, 2.4);
+    if (this.handleScale && Math.abs(s / this.handleScale - 1) > 0.15) this.updateHandles();
+  },
+  onKey(e, down) {
+    const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
+    if (!down) return false;
+    if (ctrl && k === 'z') { e.shiftKey ? this.redo() : this.undo(); return true; }
+    if (ctrl && k === 'y') { this.redo(); return true; }
+    if (ctrl && k === 'c') { this.copy(); return true; }
+    if (ctrl && k === 'v') { this.paste(); return true; }
+    if (ctrl && k === 's') { App.saveDialog(); return true; }
+    if (ctrl && k === 'a') { this.setSel(this.design.nodes.map((_, i) => i)); return true; }
+    if (ctrl) return false;
+    const t = TOOLS.find(t => t.key === k); if (t) { this.setTool(t.id); return true; }
+    const nodes = this.design.nodes, p = this.primary;
+    switch (k) {
+      case 'delete': case 'backspace': if (this.sel.length) this.deleteNodes(this.sel); return true;
+      case 'escape': this.setSel([], this.primary); return true;
+      case 'g': this.toggleSnap(); return true;
+      case 'h': this.toggleHeat(); return true;
+      case 'm': this.mirror(); return true;
+      case 't': Ride.start(); return true;
+      case 'i': if (p >= 0 && this.track) { const n = nodes.length, j = (p + 1) % n; if (j !== 0 || this.design.closed) { const tr = this.track, s0 = tr.nodeS[p], s1 = j === 0 ? tr.L : tr.nodeS[j]; this.insertAtSample(Math.round(((s0 + s1) / 2) / tr.ds) % tr.N); } } return true;
+      case 'pageup': case 'pagedown': if (this.sel.length) { const d = (k === 'pageup' ? 1 : -1) * (e.shiftKey ? 5 : 1); this.sel.forEach(i => nodes[i].y = +(nodes[i].y + d).toFixed(2)); this.commit(); } return true;
+      case ',': case '.': if (this.sel.length) { const d = (k === '.' ? 1 : -1) * (e.shiftKey ? 15 : 5); this.sel.forEach(i => { nodes[i].auto = false; nodes[i].roll = wrapDeg(nodes[i].roll + d); }); this.commit(); } return true;
+      case '[': case ']': if (nodes.length) { const j = ((p < 0 ? 0 : p) + (k === ']' ? 1 : -1) + nodes.length) % nodes.length; this.setSel([j], j); this.focusNode(j); } return true;
+      case 'f': if (e.shiftKey || !Cam.keys.f) { /* handled as zoom when held */ } return false;
+      case 'c': this.focusSelection(); return true;
+    }
+    return false;
+  },
+  focusNode(i) { const n = this.design.nodes[i]; if (n) Cam.focus(new V3(n.x, n.y, n.z), Math.min(Cam.dist, 90)); },
+  focusSelection() {
+    const nodes = this.design.nodes, list = this.sel.length ? this.sel : nodes.map((_, i) => i); if (!list.length) return;
+    const b = new THREE.Box3(); list.forEach(i => b.expandByPoint(new V3(nodes[i].x, nodes[i].y, nodes[i].z)));
+    Cam.focus(b.getCenter(new V3()), clamp(b.getSize(new V3()).length() * 1.1 + 30, 30, 800));
+  },
+  toggleSnap() { Settings.d.snap = !Settings.d.snap; Settings.save(); $('#btnSnap').classList.toggle('active', Settings.d.snap); toast('Grid snapping ' + (Settings.d.snap ? 'ON (2 m / 0.5 m)' : 'OFF')); },
+  toggleHeat() {
+    Settings.d.heatmap = !Settings.d.heatmap; Settings.save(); $('#btnHeat').classList.toggle('active', Settings.d.heatmap);
+    if (this.group) TrackRenderer.applyHeat(this.group, Settings.d.heatmap ? this.lastHeat : null);
+    this.updateBottomBar();
+  },
+  setTool(id) {
+    this.tool = id; document.querySelectorAll('#toolbar button[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+    this.ghost.visible = false; this.ring.visible = false;
+    if (id === 'terrain') this.showTab('terrain'); else if (id === 'scenery') this.showTab('scenery'); else if (['terrain', 'scenery'].includes(this.tab)) this.showTab('node');
+    R.renderer.domElement.style.cursor = id === 'select' ? 'default' : 'crosshair';
+  },
+  /* ---------- UI ---------- */
+  buildToolbar() {
+    const tb = $('#toolbar'); tb.innerHTML = '';
+    TOOLS.forEach(t => tb.append(el('button', { 'data-tool': t.id, title: t.name + ' (' + t.key + ')', onclick: () => this.setTool(t.id) }, t.icon, el('span', { class: 'k' }, t.key))));
+    tb.append(el('div', { class: 'tsep' }), el('button', { title: 'Focus on selection (C)', onclick: () => this.focusSelection() }, '🎯'));
+    this.setTool('select');
+  },
+  bindUI() {
+    $('#btnUndo').onclick = () => this.undo(); $('#btnRedo').onclick = () => this.redo();
+    $('#btnCopy').onclick = () => this.copy(); $('#btnPaste').onclick = () => this.paste();
+    $('#btnMirror').onclick = () => this.mirror(); $('#btnSnap').onclick = () => this.toggleSnap(); $('#btnHeat').onclick = () => this.toggleHeat();
+    $('#btnSnap').classList.toggle('active', Settings.d.snap); $('#btnHeat').classList.toggle('active', Settings.d.heatmap);
+    $('#btnTest').onclick = () => Ride.start();
+    $('#btnSave').onclick = () => App.saveDialog(); $('#btnPublish').onclick = () => Community.publishDialog();
+    $('#btnSettings').onclick = () => App.settingsDialog(); $('#btnMenu').onclick = () => App.toMenu();
+    const nm = $('#coasterName');
+    nm.addEventListener('input', () => { this.design.name = nm.value; });
+    nm.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') nm.blur(); });
+  },
+  showTab(t) { this.tab = t; this.renderPanel(); },
+  renderPanel() {
+    if (!this.design) return;
+    const tabs = [['track', 'Track'], ['node', 'Node'], ['build', 'Elements'], ['terrain', 'Terrain'], ['scenery', 'Scenery'], ['world', 'World']];
+    const th = $('#panelTabs'); th.innerHTML = '';
+    tabs.forEach(([id, l]) => th.append(el('button', { class: this.tab === id ? 'active' : '', onclick: () => this.showTab(id) }, l)));
+    const body = $('#panelBody'), st = body.scrollTop; body.innerHTML = '';
+    body.append(this['panel_' + this.tab]());
+    body.scrollTop = st;
+  },
+  panel_track() {
+    const d = this.design, w = el('div');
+    const styleBtns = el('div', { class: 'grid3' }, Object.entries(STYLES).map(([k, s]) => el('button', { class: d.style === k ? 'active' : '', onclick: () => { d.style = k; Train.design = null; this.commit(); } }, s.name)));
+    w.append(sec('Track style', styleBtns, el('div', { class: 'hint' }, STYLES[d.style].desc, ' Friction μ = ' + STYLES[d.style].mu + '.')));
+    w.append(sec('Layout',
+      uiCheck('Closed circuit (loop back to station)', d.closed, v => { d.closed = v; this.commit(); }),
+      uiSlider('Cars per train', 1, 8, 1, d.cars, null, v => v, v => { d.cars = v; Train.design = null; this.commit(); }),
+      el('div', { class: 'grid2' },
+        el('button', { onclick: () => Modal.confirm('Replace with starter layout?', 'This replaces the current track (undo is available).', 'Replace', () => { d.nodes = Design.starter(d.style).nodes; d.closed = true; this.setSel([]); this.commit(); }) }, '✨ Starter layout'),
+        el('button', { onclick: () => Modal.confirm('Clear the track?', 'Removes every node except a station (undo is available).', 'Clear', () => { d.nodes = Design.stationOnly(d.style).nodes; d.closed = false; this.setSel([1], 1); this.commit(); }) }, '🗑 Clear track'))));
+    w.append(sec('Colours',
+      uiColor('Track', d.colors.track, v => { d.colors.track = v; clearTimeout(this._ct); this._ct = setTimeout(() => this.commit(false), 250); }),
+      uiColor('Supports', d.colors.support, v => { d.colors.support = v; clearTimeout(this._ct); this._ct = setTimeout(() => this.commit(false), 250); }),
+      uiColor('Train', d.colors.train, v => { d.colors.train = v; Train.setColor(v); clearTimeout(this._ct); this._ct = setTimeout(() => this.commit(false), 400); })));
+    if (Settings.d.silly) {
+      w.append(sec('🤪 Silly Mode options',
+        uiCheck('Low gravity (30%)', d.physics.lowGravity, v => { d.physics.lowGravity = v; this.commit(); }),
+        uiCheck('Rainbow train', d.rainbow, v => { d.rainbow = v; Train.design = null; this.commit(); }),
+        uiCheck('Super-loop sizes (Elements tab)', d.superLoops, v => { d.superLoops = v; this.commit(); }),
+        el('div', { class: 'hint' }, 'Speed and G limits are off. The Accelerator piece is unlocked in the Node and Elements tabs.')));
+    } else w.append(sec('Silly Mode', el('div', { class: 'hint' }, 'Turn on “Silly Mode” in Settings to unlock the 600 mph Accelerator, low gravity, super loops and the rainbow train.'), el('button', { onclick: () => App.settingsDialog() }, '⚙ Open Settings')));
+    const p = this.preview;
+    if (p) {
+      const s = p.stats;
+      w.append(sec('Simulated stats',
+        el('div', { class: 'statgrid', style: 'grid-template-columns:1fr 1fr' }, [['Length', Units.dist(s.length)], ['Top speed', Units.speed(s.maxSpeed)], ['Max height', Units.len(s.height)], ['Biggest drop', Units.len(s.drop)], ['Inversions', s.inversions], ['Airtime', s.airtime.toFixed(1) + ' s'], ['Max vertical', gFmt(s.maxVG) + ' G'], ['Min vertical', gFmt(s.minVG) + ' G'], ['Max lateral', gFmt(s.maxLat) + ' G'], ['Ride time', fmtTime(s.duration)]].map(([a, b]) => el('div', null, el('small', null, a), el('b', { style: 'font-size:14px' }, b))))));
+    }
+    w.append(sec('Help', el('div', { class: 'hint', html: 'Every segment takes its piece type from the node where it <b>starts</b>. Build with the <b>Add</b> tool or drop in ready-made elements from the <b>Elements</b> tab, then press <b>▶ Test Ride</b>.' })));
+    return w;
+  },
+  panel_node() {
+    const d = this.design, nodes = d.nodes, w = el('div');
+    if (!this.sel.length) {
+      w.append(sec('No node selected', el('div', { class: 'hint', html: 'Click a node with the <b>Select</b> tool (1). <b>Shift+click</b> selects a range, <b>Ctrl+click</b> toggles. Drag to move, <b>Shift+drag</b> to change height.' }),
+        el('div', { class: 'grid2' }, el('button', { onclick: () => { const j = nodes.length - 1; this.setSel([j], j); this.focusNode(j); } }, 'Select last node'), el('button', { onclick: () => this.setSel(nodes.map((_, i) => i)) }, 'Select all'))));
+      return w;
+    }
+    const pieceOpts = PNAMES.filter(t => !PIECES[t].silly || Settings.d.silly || this.sel.some(i => nodes[i].type === t)).map(t => [t, PIECES[t].name]);
+    if (this.sel.length > 1) {
+      const sel = this.sel.map(i => nodes[i]);
+      w.append(sec(this.sel.length + ' nodes selected',
+        uiSelect('Piece type', pieceOpts, sel[0].type, v => { sel.forEach(n => { n.type = v; delete n.speed; delete n.time; }); this.commit(); }),
+        uiCheck('Auto-bank', sel.every(n => n.auto), v => { sel.forEach(n => n.auto = v); this.commit(); }),
+        uiSlider('Smoothing', 0, 2, 0.05, sel[0].smooth, null, v => v.toFixed(2), v => { sel.forEach(n => n.smooth = v); this.commit(); }),
+        el('div', { class: 'grid2' },
+          el('button', { onclick: () => { sel.forEach(n => n.y += 1); this.commit(); } }, '▲ Raise 1 m'), el('button', { onclick: () => { sel.forEach(n => n.y -= 1); this.commit(); } }, '▼ Lower 1 m'),
+          el('button', { onclick: () => this.copy() }, '⧉ Copy'), el('button', { onclick: () => this.mirror() }, '⇋ Mirror'),
+          el('button', { class: 'danger', onclick: () => this.deleteNodes(this.sel) }, '✖ Delete'), el('button', { onclick: () => this.focusSelection() }, '🎯 Focus'))));
+      return w;
+    }
+    const i = this.primary >= 0 ? this.primary : this.sel[0], n = nodes[i]; if (!n) return w;
+    const P = PIECES[n.type] || PIECES.track, g = Terrain.groundAt(n.x, n.z);
+    const live = () => { this.dragDirty = true; };
+    const done = () => this.commit();
+    w.append(el('div', { class: 'row', style: 'margin-bottom:10px' },
+      el('button', { onclick: () => { const j = (i - 1 + nodes.length) % nodes.length; this.setSel([j], j); this.focusNode(j); } }, '◀'),
+      el('div', { class: 'grow', style: 'text-align:center;font-weight:700' }, el('span', { class: 'piece-dot', style: 'background:' + P.color }), 'Node ' + (i + 1) + ' / ' + nodes.length),
+      el('button', { onclick: () => { const j = (i + 1) % nodes.length; this.setSel([j], j); this.focusNode(j); } }, '▶')));
+    const pieceSec = sec('Piece (segment starting here)', uiSelect('Type', pieceOpts, n.type, v => { n.type = v; delete n.speed; delete n.time; this.commit(); }), el('div', { class: 'hint' }, P.desc));
+    const spd = n.speed != null ? n.speed : P.speed;
+    const unitSp = v => Units.speed(v, 0);
+    if (n.type === 'lift') pieceSec.append(uiSlider('Chain speed', 1, 12, 0.5, spd, v => { n.speed = v; }, unitSp, done));
+    if (n.type === 'station') pieceSec.append(uiSlider('Tyre speed', 1, 5, 0.25, spd, v => { n.speed = v; }, unitSp, done));
+    if (n.type === 'brake') pieceSec.append(uiSlider('Target speed', 0, 30, 0.5, spd, v => { n.speed = v; }, unitSp, done));
+    if (n.type === 'block') pieceSec.append(uiSlider('Release speed', 1, 6, 0.25, spd, v => { n.speed = v; }, unitSp, done));
+    if (n.type === 'launch') {
+      const max = Settings.d.silly ? 134 : 67;
+      pieceSec.append(uiSlider('Target speed', 2, max, 0.5, Math.min(spd, max), v => { n.speed = v; }, unitSp, done),
+        uiSlider('Launch time', 1, 10, 0.1, n.time != null ? n.time : P.time, v => { n.time = v; }, v => v.toFixed(1) + ' s', done),
+        el('div', { class: 'hint' }, 'Acceleration ≈ ' + gFmt(spd / (n.time || P.time) / G0) + ' G'));
+    }
+    if (n.type === 'accel') {
+      pieceSec.append(uiSlider('Target speed', 0, 268.2, 0.45, spd, v => { n.speed = v; }, v => (v * MPH).toFixed(0) + ' mph', done),
+        uiSlider('Launch time', 0.1, 10, 0.05, n.time != null ? n.time : P.time, v => { n.time = v; }, v => v.toFixed(2) + ' s', done),
+        el('div', { class: 'hint' }, '0 → ' + (spd * MPH).toFixed(0) + ' mph at ' + gFmt(spd / (n.time || P.time) / G0) + ' G. Make the segment long enough for the train to reach full speed!'));
+    }
+    w.append(pieceSec);
+    const maxH = Settings.d.silly ? 1200 : 220;
+    w.append(sec('Position',
+      uiSlider('Height', -10, maxH, 0.5, +(n.y - g).toFixed(1), v => { n.y = +(g + v).toFixed(2); live(); }, v => Units.len(v, 1), done),
+      el('div', { class: 'grid2' },
+        el('div', { class: 'field' }, el('label', { style: 'width:14px' }, 'X'), numInput(n.x, v => { n.x = v; done(); })),
+        el('div', { class: 'field' }, el('label', { style: 'width:14px' }, 'Z'), numInput(n.z, v => { n.z = v; done(); }))),
+      el('div', { class: 'hint' }, 'Drag the node in the viewport. Shift+drag or PgUp/PgDn changes height.')));
+    const autoVal = this.track && this.track.autoRoll ? this.track.autoRoll[i] : 0;
+    const rollRow = uiSlider('Roll / bank', -180, 180, 1, n.auto ? Math.round(autoVal) : n.roll, v => { n.roll = v; live(); }, v => v + '°', done);
+    if (n.auto) { rollRow.input.disabled = true; rollRow.style.opacity = 0.55; }
+    w.append(sec('Banking',
+      uiCheck('Auto-bank (computed from speed & curvature)', n.auto, v => { n.auto = v; if (!v) n.roll = Math.round(autoVal); this.commit(); }),
+      rollRow,
+      el('div', { class: 'grid3' }, ...[-90, 0, 90].map(a => el('button', { onclick: () => { n.auto = false; n.roll = a; this.commit(); } }, a + '°'))),
+      uiSlider('Smoothing', 0, 2, 0.05, n.smooth, v => { n.smooth = v; live(); }, v => v.toFixed(2), done),
+      el('div', { class: 'hint' }, 'Smoothing scales the spline tangent: 0 = sharp corner, 1 = natural, 2 = very round.')));
+    w.append(sec('Actions', el('div', { class: 'grid2' },
+      el('button', { onclick: () => { this.tool !== 'add' && this.setTool('add'); toast('Click the ground to add nodes after this one'); } }, '✚ Add after'),
+      el('button', { onclick: () => this.onKey({ key: 'i' }, true) }, '⊕ Insert midpoint'),
+      el('button', { onclick: () => this.showTab('build') }, '🧩 Add element'),
+      el('button', { class: 'danger', onclick: () => this.deleteNodes([i]) }, '✖ Delete'))));
+    return w;
+  },
+  panel_build() {
+    const w = el('div'), sillyBig = Settings.d.silly && this.design.superLoops;
+    w.append(el('div', { class: 'hint', style: 'margin-top:0' }, 'Elements are inserted after the selected node (node ' + ((this.primary >= 0 ? this.primary : this.design.nodes.length - 1) + 1) + ') and sized for the train’s speed there. They become normal spline nodes you can edit.'));
+    w.append(sec('Options',
+      uiSlider('Size', 0.5, sillyBig ? 6 : 2, 0.05, this.wiz.size, v => { this.wiz.size = v; }, v => v.toFixed(2) + '×'),
+      el('div', { class: 'grid2' }, el('button', { class: this.wiz.dir > 0 ? 'active' : '', onclick: () => { this.wiz.dir = 1; this.renderPanel(); } }, '↰ Left'), el('button', { class: this.wiz.dir < 0 ? 'active' : '', onclick: () => { this.wiz.dir = -1; this.renderPanel(); } }, 'Right ↱')),
+      sillyBig ? el('div', { class: 'hint', style: 'color:#ffc2f2' }, 'Super-loop sizes enabled: loops scale up to 6×.') : null));
+    const grid = el('div', { class: 'grid2' });
+    ELEMENTS.filter(e => !e.silly || Settings.d.silly).forEach(e => grid.append(el('button', { onclick: () => this.applyElement(e), style: e.silly ? 'border-color:#ff4fd8' : '' }, e.icon + ' ' + e.name)));
+    w.append(sec('Elements', grid));
+    w.append(sec('Piece colours', el('div', null, PNAMES.filter(t => !PIECES[t].silly || Settings.d.silly).map(t => el('div', { class: 'hint', style: 'margin:3px 0' }, el('span', { class: 'piece-dot', style: 'background:' + PIECES[t].color }), PIECES[t].name)))));
+    return w;
+  },
+  panel_terrain() {
+    const w = el('div'), B = this.brush;
+    const modes = [['raise', '⬆ Raise'], ['lower', '⬇ Lower'], ['flatten', '▬ Flatten'], ['smooth', '≈ Smooth'], ['water', '💧 Dig water']];
+    w.append(sec('Brush', el('div', { class: 'grid2' }, modes.map(([m, l]) => el('button', { class: B.mode === m ? 'active' : '', onclick: () => { B.mode = m; this.setTool('terrain'); this.renderPanel(); } }, l))),
+      uiSlider('Radius', 3, 60, 1, B.radius, v => B.radius = v, v => Units.len(v)), uiSlider('Strength', 0.1, 3, 0.1, B.strength, v => B.strength = v, v => v.toFixed(1)),
+      el('div', { class: 'hint' }, 'Hold the left mouse button to paint. Supports re-adapt to the new ground automatically.')));
+    w.append(sec('Water', uiSlider('Water level', -10, 20, 0.25, Terrain.water, v => { Terrain.water = v; Terrain.update(); }, v => Units.len(v, 1), () => { this.rebuild(); Scenery.rebuild(); this.commit(false); })));
+    w.append(sec('Landscape', el('div', { class: 'grid2' },
+      el('button', { onclick: () => { Terrain.generate(1 + Math.floor(Math.random() * 999)); Scenery.rebuild(); this.rebuild(); this.commit(false); } }, '🎲 New hills'),
+      el('button', { onclick: () => { Terrain.flatten(); Scenery.rebuild(); this.rebuild(); this.commit(false); } }, '▭ Flatten all'))));
+    return w;
+  },
+  panel_scenery() {
+    const w = el('div'), S = this.scen;
+    const grid = el('div', { class: 'grid3' });
+    Object.entries(Scenery.TYPES).forEach(([k, t]) => grid.append(el('button', { class: S.type === k ? 'active' : '', title: t.name, onclick: () => { S.type = k; this.setTool('scenery'); this.renderPanel(); } }, el('div', { style: 'font-size:18px' }, t.icon), el('div', { style: 'font-size:10.5px' }, t.name))));
+    w.append(sec('Palette', grid, el('div', { class: 'hint', html: 'Click to place, <b>Shift+click</b> to remove. Paths can be painted by dragging.' })));
+    w.append(sec('Placement', uiSlider('Rotation', 0, 360, 15, S.rot, v => S.rot = v, v => v ? v + '°' : 'random')));
+    w.append(sec('Quick decorate', el('div', { class: 'grid2' },
+      el('button', { onclick: () => { const n = Scenery.scatter(45, this.track); Scenery.rebuild(); this.commit(false); toast('Planted ' + n + ' trees & rocks', 'good'); } }, '🌳 Plant forest'),
+      el('button', { onclick: () => { this.decorateTrack(); } }, '💡 Light the track'),
+      el('button', { class: 'danger', onclick: () => Modal.confirm('Remove all scenery?', 'Undo is available.', 'Remove', () => { Scenery.items.length = 0; Scenery.rebuild(); this.commit(false); }) }, '🗑 Clear all')),
+      el('div', { class: 'hint' }, Scenery.items.length + ' objects placed.')));
+    return w;
+  },
+  decorateTrack() {
+    const tr = this.track; if (!tr) return;
+    let n = 0;
+    for (let k = 0; k < tr.N; k += Math.round(30 / tr.ds)) {
+      const sx = tr.sx[k], sz = tr.sz[k], l = Math.hypot(sx, sz) || 1, x = tr.px[k] + sx / l * 6, z = tr.pz[k] + sz / l * 6;
+      if (Terrain.heightAt(x, z) > Terrain.water && Scenery.add('lamp', x, z, 0, 1)) n++;
+    }
+    Scenery.rebuild(); this.commit(false); toast('Placed ' + n + ' lamps (they glow at night)', 'good');
+  },
+  panel_world() {
+    const w = el('div');
+    const wx = [['sunny', '☀ Sunny'], ['sunset', '🌇 Sunset'], ['night', '🌙 Night'], ['fog', '🌫 Fog']];
+    w.append(sec('Weather', el('div', { class: 'grid2' }, wx.map(([k, l]) => el('button', { class: Env.weather === k ? 'active' : '', onclick: () => { Env.setWeather(k); this.design.env = Env.json; this.renderPanel(); } }, l)))));
+    w.append(sec('Time of day',
+      uiSlider('Time', 0, 24, 0.1, +Env.time.toFixed(1), v => { Env.time = v; Env.apply(); }, v => { const h = Math.floor(v), m = Math.floor((v - h) * 60); return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); }),
+      uiCheck('Day / night cycle', Env.cycle, v => { Env.cycle = v; }),
+      el('div', { class: 'hint' }, 'At night the track lights, lamps, crystals and train headlights glow.')));
+    return w;
+  },
+  updateBottomBar() {
+    const bb = $('#bottombar'); bb.innerHTML = '';
+    const p = this.preview;
+    if (!this.track) { bb.append(el('span', { class: 'muted' }, 'Add at least two nodes to make a track. Use the ✚ Add tool or the Elements tab.')); return; }
+    if (!p) { bb.append(el('span', { class: 'muted' }, 'Simulating…')); return; }
+    const r = p.ratings, s = p.stats, silly = this.isSilly();
+    const stat = (l, v, c) => el('span', { class: 'stat' }, l + ' ', el('b', { style: c ? 'color:' + c : '' }, v));
+    bb.append(el('span', { class: 'muted' }, 'PREVIEW'),
+      stat('Excitement', r.excitement.toFixed(1), Ratings.color(10 - r.excitement)), stat('Intensity', r.offCharts ? '10+' : r.intensity.toFixed(1), Ratings.color(r.intensity)), stat('Nausea', r.nausea.toFixed(1), Ratings.color(r.nausea)),
+      el('span', { class: 'stars' }, starsStr(r.stars)),
+      silly ? el('span', { class: 'tag silly' }, 'SILLY') : null,
+      stat('Top', Units.speed(s.maxSpeed, 0)), stat('Inv', s.inversions), stat('Length', Units.dist(s.length)));
+    const issues = [];
+    if (s.result !== 'complete') issues.push(s.result === 'stuck' ? (silly ? '🤪 ' : '⚠ ') + 'Train gets stuck (red marker)' : s.result === 'crash' ? '⚠ Train hits the end of the track' : '⚠ Ride does not finish');
+    s.events.filter(e => e.type !== 'stuck' && e.type !== 'crash').forEach(e => issues.push((e.silly ? '🤪 ' : '⚠ ') + e.msg));
+    if (!this.track.stationK >= 0 && this.track.stationK < 0) issues.push('ℹ No station: add a Station piece');
+    const wEl = el('span', { class: 'warnings', title: issues.join('\n') }, issues.length ? issues[0] + (issues.length > 1 ? `  (+${issues.length - 1} more)` : '') : '✓ Ride completes, no warnings');
+    if (!issues.length) wEl.style.color = 'var(--good)';
+    bb.append(wEl);
+    if (Settings.d.heatmap) bb.append(el('span', { style: 'display:flex;align-items:center;gap:4px', class: 'muted' }, 'mild', el('span', { style: 'width:70px;height:8px;border-radius:4px;background:linear-gradient(90deg,#33d940,#ffd940,#ff2a1a,#ff19ff)' }), 'extreme'));
+  },
+  updateChallengeBox() {
+    const box = $('#challengeBox'), ch = Challenges.active;
+    if (!ch || App.state !== 'editor') { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden'); box.innerHTML = '';
+    const res = Challenges.evaluate(ch, this.preview && this.preview.stats, this.preview && this.preview.ratings);
+    box.append(el('h4', null, '🏆 ' + ch.name), el('div', { class: 'muted', style: 'margin-bottom:6px' }, ch.desc),
+      ...res.map(g => el('div', { class: 'goal' + (g.ok ? ' ok' : '') }, g.ok ? '✔' : '○', ' ', g.label)),
+      el('div', { class: 'hint' }, res.every(g => g.ok) ? 'All goals met in the preview. Test ride it to complete the challenge!' : 'Goals update live from the simulation.'),
+      el('button', { style: 'margin-top:4px', onclick: () => { Challenges.active = null; this.updateChallengeBox(); } }, 'Leave challenge'));
+  }
+};
+function numInput(v, onChange) {
+  const i = el('input', { type: 'number', value: v.toFixed(1), step: '0.5', style: 'width:100%' });
+  i.addEventListener('change', () => { const n = parseFloat(i.value); if (isFinite(n)) onChange(clamp(n, -2000, 2000)); });
+  i.addEventListener('keydown', e => e.stopPropagation());
+  return i;
+}
+
+
+/* =====================================================================
+   RIDE — live test mode, cameras, HUD
+   ===================================================================== */
+const CAM_NAMES = { ride: 'Ride POV', chase: 'Chase', orbit: 'Orbit', flyby: 'Flyby' };
+const Ride = {
+  active: false, cams: ['ride', 'chase', 'orbit', 'flyby'], cam: 0, speeds: [0.1, 0.25, 0.5, 1, 2], si: 3,
+  F: makeFrame(), Fc: makeFrame(), camUp: new V3(0, 1, 0), camPos: new V3(), flyPos: null,
+  start() {
+    const ed = Editor;
+    if (!ed.track) { toast('Build a track first: at least two nodes.', 'bad'); return; }
+    Modal.close(); Sound.init();
+    this.silly = ed.isSilly();
+    this.sim = this.makeSim(ed.track, ed.design);
+    if (Train.design !== ed.design || Train.cars.length !== clamp(ed.design.cars, 1, 8)) Train.build(ed.design);
+    Train.group.visible = true;
+    this.saved = { t: Cam.target.clone(), yaw: Cam.yaw, pitch: Cam.pitch, dist: Cam.dist };
+    this.cam = Math.max(0, this.cams.indexOf(Settings.d.rideCam)); this.updateCamBtn();
+    this.graph = []; this.gacc = 0; this.endT = 0; this.statsShown = false; this.flyPos = null; this.first = true; this.time = 0;
+    this.disp = { vG: 1, lat: 0, lon: 0 };
+    $('#hudWarn').innerHTML = '';
+    $('#btnSlow').textContent = '⏱ ' + this.speeds[this.si] + '×';
+    this.active = true; App.setState('ride');
+    if (!ed.track.closed) this.hudMsg('Open track: the ride ends at the last node.', 'info');
+    if (ed.track.stationK < 0) this.hudMsg('No station: the train starts rolling at 9 mph.', 'info');
+  },
+  makeSim(track, design) {
+    const sim = new Sim(track, design, this.silly);
+    sim.onEvent = e => { this.hudMsg(e.msg, e.silly ? 'silly' : ''); Sound.blip(e.silly ? 990 : 240, 0.12); };
+    sim.onLaunch = v => { Sound.whoosh(Math.min(1, v / 60)); this.hudMsg(v > 100 ? '🚀 ACCELERATOR ENGAGED' : '⚡ LAUNCH!', 'info'); Sound.scream(1.2, this.silly); };
+    sim.onBrake = () => Sound.hiss();
+    return sim;
+  },
+  stop() {
+    if (!this.active) return;
+    this.active = false; Sound.silence(); Train.group.visible = false;
+    Object.assign(Cam, { yaw: this.saved.yaw, pitch: this.saved.pitch, dist: this.saved.dist }); Cam.target.copy(this.saved.t); Cam.goal = null;
+    R.camera.fov = 60; R.camera.updateProjectionMatrix();
+    App.setState('editor');
+    if (this.sim && Editor.track && this.sim.tr === Editor.track) { Editor.lastHeat = this.sim.heat; if (Settings.d.heatmap && Editor.group) TrackRenderer.applyHeat(Editor.group, Editor.lastHeat); }
+  },
+  restart() { Modal.close(); this.sim = this.makeSim(Editor.track, Editor.design); this.statsShown = false; this.endT = 0; this.graph = []; this.time = 0; $('#hudWarn').innerHTML = ''; },
+  cycleCam() { this.cam = (this.cam + 1) % this.cams.length; Settings.d.rideCam = this.cams[this.cam]; Settings.save(); this.updateCamBtn(); this.flyPos = null; this.first = true; },
+  updateCamBtn() { $('#btnCam').textContent = '🎥 Camera: ' + CAM_NAMES[this.cams[this.cam]] + ' (C)'; },
+  cycleSpeed(d) { this.si = clamp(this.si + d, 0, this.speeds.length - 1); $('#btnSlow').textContent = '⏱ ' + this.speeds[this.si] + '×'; },
+  hudMsg(msg, cls) {
+    const box = $('#hudWarn'), d = el('div', { class: cls || '' }, msg); box.append(d);
+    while (box.children.length > 4) box.firstChild.remove();
+    setTimeout(() => { d.style.transition = 'opacity .5s'; d.style.opacity = '0'; setTimeout(() => d.remove(), 520); }, 3200);
+  },
+  // shared camera placement (also used by the menu attract mode)
+  placeCamera(mode, sim, dt, cam) {
+    const tr = sim.tr, F = this.F, Fc = this.Fc, inv = sim.design.style === 'inverted';
+    const a = this.first ? 1 : 1 - Math.exp(-dt * 5);
+    tr.frameAt(sim.s + sim.offs[0], F); tr.frameAt(sim.s, Fc);
+    let fov = 60;
+    if (mode === 'ride') {
+      const eye = F.p.clone().addScaledVector(F.u, inv ? -1.05 : 1.4).addScaledVector(F.t, 0.5);
+      this.camUp.lerp(F.u, this.first ? 1 : 1 - Math.exp(-dt * 14)).normalize();
+      cam.position.copy(eye); cam.up.copy(this.camUp);
+      cam.lookAt(eye.clone().addScaledVector(F.t, 20).addScaledVector(F.u, -1.2));
+      fov = 78 + (this.silly ? Math.min(32, Math.abs(sim.v) / 7) : Math.min(8, Math.abs(sim.v) / 6));
+    } else if (mode === 'chase') {
+      const want = Fc.p.clone().addScaledVector(Fc.t, -15).addScaledVector(Fc.u, inv ? 1.5 : 5.5).add(new V3(0, 2, 0));
+      if (this.first) this.camPos.copy(want); else this.camPos.lerp(want, 1 - Math.exp(-dt * (Math.abs(sim.v) > 60 ? 12 : 4)));
+      const gy = Terrain.groundAt(this.camPos.x, this.camPos.z) + 1.2; if (this.camPos.y < gy) this.camPos.y = gy;
+      this.camUp.lerp(_a.copy(Fc.u).lerp(UPV, 0.6), a).normalize();
+      cam.position.copy(this.camPos); cam.up.copy(this.camUp); cam.lookAt(Fc.p.clone().addScaledVector(Fc.t, 4));
+      fov = 65;
+    } else if (mode === 'orbit') {
+      Cam.target.lerp(Fc.p, this.first ? 1 : 1 - Math.exp(-dt * 6)); Cam.goal = null;
+      if (this.first) { Cam.dist = 40; Cam.pitch = 0.35; }
+      Cam.apply(cam);
+    } else if (mode === 'flyby') {
+      const far = this.flyPos ? this.flyPos.distanceTo(Fc.p) : 1e9;
+      const ahead = this.flyPos ? this.flyPos.clone().sub(Fc.p).dot(Fc.t) : -1;
+      if (far > 110 || (ahead < -25 && far > 40)) {
+        const lead = 35 + Math.abs(sim.v) * 2.2, P = makeFrame(); tr.frameAt(sim.s + lead, P);
+        const side = new V3(P.side.x, 0, P.side.z).normalize().multiplyScalar(14 * (Math.random() < 0.5 ? -1 : 1));
+        this.flyPos = P.p.clone().add(side); this.flyPos.y = Math.max(Terrain.groundAt(this.flyPos.x, this.flyPos.z) + 2.5, P.p.y - 6 + Math.random() * 8);
+      }
+      cam.position.copy(this.flyPos); cam.up.set(0, 1, 0); cam.lookAt(Fc.p);
+      fov = clamp(20 + far * 0.35, 25, 60);
+    }
+    if (Math.abs(cam.fov - fov) > 0.05) { cam.fov = this.first ? fov : lerp(cam.fov, fov, a); cam.updateProjectionMatrix(); }
+    this.first = false;
+    return Fc.p;
+  },
+  update(dt) {
+    const sim = this.sim, mul = this.speeds[this.si];
+    if (!sim.done) { sim.step(dt * mul); this.time += dt * mul; }
+    Train.place(sim.tr, sim.s, this.F, performance.now() / 1000);
+    const focus = this.placeCamera(this.cams[this.cam], sim, dt, R.camera);
+    // sound
+    Sound.ride(sim.v, !sim.done, dt * mul, sim.onLift);
+    if (!sim.done) {
+      const lvl = Math.max(sim.vG - 3.2, 0.15 - sim.vG, Math.abs(sim.lat) - 1.2);
+      if (lvl > 0 && Math.abs(sim.v) > 6) Sound.scream(Math.min(3, lvl + (this.silly ? 1 : 0)), this.silly);
+    }
+    this.hud(dt);
+    if (sim.done && !this.statsShown) { this.endT += dt; if (this.endT > 1.0) { this.statsShown = true; this.showStats(); } }
+    return focus;
+  },
+  hud(dt) {
+    const sim = this.sim, d = this.disp, k = 1 - Math.exp(-dt * 10);
+    d.vG = lerp(d.vG, sim.vG, k); d.lat = lerp(d.lat, sim.lat, k); d.lon = lerp(d.lon, sim.lon, k);
+    const v = Math.abs(sim.v);
+    $('#hudV').textContent = Units.sp(v).toFixed(Units.sp(v) < 100 ? 1 : 0); $('#hudVU').textContent = Units.spU();
+    const F = this.Fc, gy = Terrain.groundAt(F.p.x, F.p.z);
+    $('#hudH').textContent = 'Height ' + Units.len(Math.max(0, F.p.y - gy)) + ' · ' + (sim.v < -0.3 ? '◀ rolling back' : 'Lap ' + Units.dist(Math.max(0, sim.dist)));
+    const gc = (g, lo, hi) => { const a = Math.abs(g); return a > hi ? '#ff4d6a' : a > lo ? '#ffc547' : '#fff'; };
+    const gv = $('#gV'), gl = $('#gL'), gf = $('#gF');
+    gv.textContent = gFmt(d.vG); gv.style.color = d.vG > 4.5 || d.vG < -1 ? '#ff4d6a' : d.vG > 3.2 || d.vG < 0.2 ? '#ffc547' : '#fff';
+    gl.textContent = gFmt(d.lat); gl.style.color = gc(d.lat, 1, 1.8);
+    gf.textContent = gFmt(d.lon); gf.style.color = gc(d.lon, 1.5, 3);
+    const code = sim.code, name = PNAMES[code];
+    const segTxt = sim.done ? (sim.result === 'complete' ? '✔ RIDE COMPLETE' : sim.result === 'stuck' ? '⚠ STUCK' : '⚠ ' + String(sim.result).toUpperCase()) : (PIECES[name] ? PIECES[name].name.toUpperCase() : 'TRACK');
+    $('#hudSeg').textContent = segTxt; $('#hudSeg').style.color = sim.done ? (sim.result === 'complete' ? 'var(--good)' : 'var(--bad)') : PIECES[name].color;
+    $('#hudTime').textContent = fmtTime(sim.t) + (this.speeds[this.si] !== 1 ? ' · ' + this.speeds[this.si] + '× speed' : '') + (this.silly ? ' · 🤪 SILLY' : '');
+    this.gacc += dt;
+    if (this.gacc > 1 / 30) { this.gacc = 0; if (!sim.done) { this.graph.push([sim.vG, sim.lat, sim.lon]); if (this.graph.length > 300) this.graph.shift(); } this.drawGraph(); }
+  },
+  drawGraph() {
+    const c = $('#gGraph'), x = c.getContext('2d'), W = c.width, H = c.height, g = this.graph;
+    x.clearRect(0, 0, W, H);
+    let lo = -1.5, hi = 5;
+    for (const r of g) for (const v of r) { if (v > hi) hi = v; if (v < lo) lo = v; }
+    hi = Math.ceil(hi); lo = Math.floor(lo);
+    const Y = v => H - 8 - (v - lo) / (hi - lo) * (H - 16);
+    x.lineWidth = 1; x.font = '18px system-ui'; x.fillStyle = 'rgba(255,255,255,.45)';
+    const step = hi - lo > 40 ? 20 : hi - lo > 12 ? 5 : 1;
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+      x.strokeStyle = v === 0 ? 'rgba(255,255,255,.4)' : v === 1 ? 'rgba(95,183,255,.25)' : 'rgba(255,255,255,.08)';
+      x.beginPath(); x.moveTo(0, Y(v)); x.lineTo(W, Y(v)); x.stroke();
+      if (v % (step * (step === 1 ? 2 : 1)) === 0) x.fillText(v + 'G', 4, Y(v) - 3);
+    }
+    const cols = ['#5fb7ff', '#ffa64d', '#5fe39a'];
+    for (let ch = 2; ch >= 0; ch--) {
+      x.strokeStyle = cols[ch]; x.lineWidth = ch === 0 ? 3.5 : 2.5; x.beginPath();
+      g.forEach((r, i) => { const px = W - (g.length - 1 - i) * (W / 300); i ? x.lineTo(px, Y(r[ch])) : x.moveTo(px, Y(r[ch])); });
+      x.stroke();
+    }
+  },
+  showStats() {
+    const s = this.sim.stats(), silly = this.silly, r = Ratings.rate(s, silly), ch = Challenges.active;
+    this.lastStats = { stats: s, ratings: r };
+    const resultTxt = { complete: '✔ Ride completed', stuck: '⚠ The train got stuck', crash: '⚠ The train hit the end of the track', timeout: '⚠ Ride took too long', incomplete: '⚠ Ride did not finish' }[s.result];
+    const body = el('div');
+    body.append(el('div', { class: 'row', style: 'margin-bottom:12px' }, el('b', { style: 'font-size:16px;color:' + (s.result === 'complete' ? 'var(--good)' : 'var(--bad)') }, resultTxt),
+      silly ? el('span', { class: 'tag silly' }, 'SILLY') : el('span', { class: 'tag normal' }, 'NORMAL'), s.unsafe && !silly ? el('span', { class: 'tag', style: 'background:rgba(255,77,106,.3)' }, 'FAILED SAFETY INSPECTION') : null));
+    body.append(ratingTiles(r, silly));
+    body.append(el('div', { class: 'statgrid' }, [
+      ['Max speed', Units.speed(s.maxSpeed)], ['Average speed', Units.speed(s.avgSpeed)], ['Max vertical G', gFmt(s.maxVG)], ['Min vertical G', gFmt(s.minVG)],
+      ['Max lateral G', gFmt(s.maxLat)], ['Max longitudinal G', gFmt(s.maxLon)], ['Airtime', s.airtime.toFixed(1) + ' s'], ['Track length', Units.dist(s.length)],
+      ['Drop height', Units.len(s.drop)], ['Inversions', s.inversions], ['Ride duration', fmtTime(s.duration)], ['Smoothness', r.smoothness.toFixed(1) + ' / 10']
+    ].map(([a, b]) => el('div', null, el('small', null, a), el('b', null, b)))));
+    if (s.events.length) body.append(el('h3', { style: 'margin:16px 0 6px' }, silly ? '🤪 Incident report' : '⚠ Safety report'), el('div', { class: 'warnlist' }, s.events.map(e => el('div', { class: e.silly ? 'silly' : '' }, e.msg))));
+    if (ch) {
+      const res = Challenges.evaluate(ch, s, r), ok = res.every(g => g.ok);
+      body.append(el('h3', { style: 'margin:16px 0 6px' }, '🏆 ' + ch.name), ...res.map(g => el('div', { style: 'color:' + (g.ok ? 'var(--good)' : 'var(--muted)') }, (g.ok ? '✔ ' : '✖ ') + g.label)));
+      if (ok && !(ch.silly && !silly) && Challenges.markDone(ch.id)) { setTimeout(() => { Sound.fanfare(); toast('🏆 Challenge complete: ' + ch.name + '!', 'good', 4500); }, 300); }
+    }
+    Modal.open('Ride Report: ' + (Editor.design.name || 'Untitled'), body, [
+      el('button', { onclick: () => { Modal.close(); this.restart(); } }, '⟲ Ride again'),
+      el('button', { onclick: () => { Modal.close(); App.saveDialog(); } }, '💾 Save'),
+      el('button', { onclick: () => { Modal.close(); this.stop(); Community.publishDialog(); } }, '🌐 Publish'),
+      el('button', { class: 'primary', onclick: () => { Modal.close(); this.stop(); } }, '✎ Back to editor')]);
+  }
+};
+
+/* =====================================================================
+   MENU ATTRACT MODE — a sample coaster runs behind the main menu
+   ===================================================================== */
+const Attract = {
+  sim: null, t: 0, mode: 0,
+  start() {
+    const s = Samples.list()[0], d = Design.validate(Design.clone(s.design));
+    d.env = { time: 17.6, weather: 'sunny', cycle: false };
+    Editor.load(d);
+    Scenery.rnd = mulberry32(11); Scenery.scatter(70, Editor.track); Scenery.add('tower', -60, 30); Scenery.add('lamp', -84, -46); Scenery.rebuild();
+    Env.time = 17.4; Env.apply();
+    this.restart(); this.t = 0; this.mode = 0; Ride.first = true;
+  },
+  restart() { this.sim = new Sim(Editor.track, Editor.design, false); this.sim.s += 40; this.sim.v = 0; },
+  update(dt) {
+    if (!this.sim || !Editor.track) return null;
+    if (this.sim.done) this.restart();
+    this.sim.step(dt); this.t += dt;
+    Train.group.visible = true; Train.place(this.sim.tr, this.sim.s, Ride.F, performance.now() / 1000);
+    const modes = ['orbit', 'chase', 'flyby', 'ride'], dur = [16, 10, 12, 9];
+    if (this.t > dur[this.mode]) { this.t = 0; this.mode = (this.mode + 1) % modes.length; Ride.first = true; Ride.flyPos = null; }
+    const m = modes[this.mode];
+    if (m === 'orbit') {
+      const b = Editor.track.bounds(), c = b.getCenter(new V3());
+      Cam.target.lerp(c.setY(15), Ride.first ? 1 : 0.02); Cam.yaw += dt * 0.06; Cam.pitch = 0.32; Cam.dist = 230; Cam.apply(R.camera);
+      if (R.camera.fov !== 60) { R.camera.fov = 60; R.camera.updateProjectionMatrix(); }
+      Ride.first = false; return c;
+    }
+    Ride.silly = false;
+    return Ride.placeCamera(m, this.sim, dt, R.camera);
+  }
+};
+
+/* =====================================================================
+   APP — screens, dialogs, input, main loop
+   ===================================================================== */
+const App = {
+  state: 'menu', last: performance.now(), frames: 0, fpsT: 0,
+  init() {
+    initRenderer();
+    Terrain.init(R.scene); Env.init(R.scene); Scenery.init(R.scene); Train.init(R.scene); Editor.init(R.scene);
+    this.bindInput(); this.bindMenu();
+    Community.seed();
+    this.setState('menu'); Attract.start();
+    $('#loading').classList.add('hidden');
+    requestAnimationFrame(t => this.loop(t));
+  },
+  setState(s) {
+    this.state = s;
+    $('#menu').classList.toggle('hidden', s !== 'menu');
+    $('#editor').classList.toggle('hidden', s !== 'editor');
+    $('#hud').classList.toggle('hidden', s !== 'ride');
+    Editor.setVisible(s === 'editor');
+    if (s === 'editor') { Train.group.visible = false; Editor.updateHandles(); Editor.updateBottomBar(); if (Editor.preview && Editor.preview.stats.stuckS != null && Editor.preview.stats.result !== 'complete') Editor.warnMark.visible = true; }
+    Editor.updateChallengeBox();
+    this.updateSillyBadges();
+    $('#btnContinue').classList.toggle('hidden', !Store.get('sky.autosave', null));
+  },
+  updateSillyBadges() {
+    const on = Settings.d.silly;
+    $('#sillyTop').innerHTML = on ? '<span class="tag silly">🤪 SILLY MODE</span>' : '';
+    $('#menuSilly').innerHTML = on ? '<span class="tag silly" style="margin-top:8px">🤪 SILLY MODE ON</span>' : '';
+  },
+  toMenu() { if (Ride.active) Ride.stop(); Editor.autosave(); Modal.close(); Challenges.active = null; this.setState('menu'); Attract.start(); },
+  openDesign(d) { Modal.close(); if (Ride.active) Ride.stop(); Attract.sim = null; Editor.load(d); this.setState('editor'); Editor.showTab(d.nodes.length <= 2 ? 'build' : 'track'); },
+  bindMenu() {
+    document.querySelectorAll('#menu [data-act]').forEach(b => b.addEventListener('click', () => {
+      Sound.init(); Sound.blip(660);
+      const a = b.dataset.act;
+      if (a === 'new') this.newDialog(); else if (a === 'load') this.loadDialog(); else if (a === 'community') Community.open();
+      else if (a === 'settings') this.settingsDialog(); else if (a === 'challenges') this.challengesDialog();
+      else if (a === 'continue') { const d = Store.get('sky.autosave', null); if (d) { try { this.openDesign(Design.validate(d)); } catch (e) { toast('Autosave is damaged', 'bad'); } } }
+    }));
+    $('#hudSpeed').addEventListener('click', () => Units.toggle());
+    $('#btnCam').onclick = () => Ride.cycleCam(); $('#btnStop').onclick = () => Ride.stop(); $('#btnRestart').onclick = () => Ride.restart();
+    $('#btnSlow').onclick = () => Ride.cycleSpeed(Ride.si >= Ride.speeds.length - 1 ? -(Ride.speeds.length - 1) : 1);
+  },
+  newDialog(challenge) {
+    let style = 'steel', layout = challenge ? 'blank' : 'starter';
+    const body = el('div');
+    const render = () => {
+      body.innerHTML = '';
+      body.append(el('h3', { class: 'muted', style: 'font-size:11px;letter-spacing:.12em;margin:0 0 8px' }, 'TRACK STYLE'),
+        el('div', { class: 'cards', style: 'grid-template-columns:repeat(3,1fr)' }, Object.entries(STYLES).map(([k, s]) => el('div', { class: 'card', style: style === k ? 'border-color:var(--accent2);background:rgba(42,209,196,.1)' : '', onclick: () => { style = k; render(); } },
+          el('div', { class: 'cb' }, el('div', { class: 't' }, { steel: '🔩 ', wooden: '🪵 ', inverted: '🦇 ' }[k] + s.name), el('div', { class: 'a' }, s.desc))))),
+        el('h3', { class: 'muted', style: 'font-size:11px;letter-spacing:.12em;margin:16px 0 8px' }, 'START WITH'),
+        el('div', { class: 'cards', style: 'grid-template-columns:repeat(2,1fr)' },
+          [['starter', '✨ Starter layout', 'A complete, rideable circuit to remix: station, lift, drop, hills, turnaround and brakes.'], ['blank', '🏁 Blank canvas', 'Just a station. Build everything yourself with nodes and elements.']].map(([k, t, dsc]) =>
+            el('div', { class: 'card', style: layout === k ? 'border-color:var(--accent2);background:rgba(42,209,196,.1)' : '', onclick: () => { layout = k; render(); } }, el('div', { class: 'cb' }, el('div', { class: 't' }, t), el('div', { class: 'a' }, dsc))))));
+    };
+    render();
+    Modal.open(challenge ? 'Challenge: ' + challenge.name : 'New Coaster', body, [el('button', { onclick: () => Modal.close() }, 'Cancel'), el('button', {
+      class: 'primary', onclick: () => {
+        const d = layout === 'starter' ? Design.starter(style) : Design.stationOnly(style);
+        Challenges.active = challenge || null;
+        d.name = challenge ? challenge.name + ' attempt' : (layout === 'starter' ? 'My First Coaster' : 'Untitled Coaster');
+        this.openDesign(d);
+        toast(layout === 'starter' ? 'Starter layout ready. Press T to test ride!' : 'Select the end node and add track with the Add tool (2) or the Elements tab.', 'good', 4000);
+      }
+    }, 'Start building →')]);
+  },
+  savesList() { return Store.get('sky.saves.v1', []); },
+  saveDialog() {
+    if (!Editor.design) return;
+    const d = Editor.serialize(true); d.name = Editor.design.name || 'Untitled Coaster';
+    const thumb = captureScreenshot(256, 144);
+    const list = this.savesList().filter(s => s.id !== d.id);
+    list.unshift({ id: d.id, name: d.name, updated: Date.now(), thumb, silly: Design.isSilly(d) || Settings.d.silly, design: d });
+    if (Store.set('sky.saves.v1', list.slice(0, 40))) { toast('💾 Saved “' + d.name + '”', 'good'); Sound.blip(880); }
+  },
+  exportDesign(d) {
+    const blob = new Blob([JSON.stringify(d)], { type: 'application/json' }), a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = (d.name || 'coaster').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_') + '.skyline.json';
+    document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  },
+  loadDialog() {
+    const body = el('div');
+    const file = el('input', { type: 'file', accept: '.json,application/json', style: 'display:none' });
+    file.addEventListener('change', () => {
+      const f = file.files[0]; if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => { try { const d = Design.validate(JSON.parse(rd.result)); d.id = uid(); this.openDesign(d); toast('Imported “' + d.name + '”', 'good'); } catch (e) { toast('Import failed: ' + e.message, 'bad', 4000); } };
+      rd.readAsText(f);
+    });
+    const render = () => {
+      body.innerHTML = '';
+      const list = this.savesList();
+      body.append(el('div', { class: 'row', style: 'margin-bottom:12px' }, el('button', { onclick: () => file.click() }, '📥 Import JSON…'),
+        Editor.design && this.state !== 'menu' ? el('button', { onclick: () => this.exportDesign(Editor.serialize(true)) }, '📤 Export current coaster') : null, file));
+      if (!list.length) body.append(el('p', { class: 'muted' }, 'No saved coasters yet. Use 💾 Save in the editor.'));
+      list.forEach(s => body.append(el('div', { class: 'list-item' }, el('img', { src: s.thumb || '' }),
+        el('div', { class: 'grow' }, el('b', null, s.name, ' ', s.silly ? el('span', { class: 'tag silly' }, 'SILLY') : null), el('div', { class: 'muted' }, STYLES[s.design.style] ? STYLES[s.design.style].name : '', ' · ', s.design.nodes.length + ' nodes · saved ' + timeAgo(s.updated))),
+        el('button', { class: 'primary', onclick: () => { try { this.openDesign(Design.validate(Design.clone(s.design))); } catch (e) { toast('Could not load: ' + e.message, 'bad'); } } }, 'Load'),
+        el('button', { onclick: () => this.exportDesign(s.design) }, 'Export'),
+        el('button', { class: 'danger', onclick: () => { Store.set('sky.saves.v1', this.savesList().filter(x => x.id !== s.id)); render(); } }, '✖'))));
+    };
+    render();
+    Modal.open('Your Coasters', body);
+  },
+  settingsDialog() {
+    const S = Settings.d, body = el('div');
+    const save = () => { Settings.save(); };
+    const name = el('input', { type: 'text', value: S.playerName, maxlength: 24, style: 'flex:1' });
+    name.addEventListener('keydown', e => e.stopPropagation()); name.addEventListener('change', () => { S.playerName = name.value.trim() || S.playerName; save(); });
+    const silly = uiCheck('Silly Mode', S.silly, v => {
+      S.silly = v; save(); this.updateSillyBadges();
+      if (Editor.design) { Editor.renderPanel(); Editor.schedulePreview(); }
+      toast(v ? '🤪 Silly Mode ON. Physics has been notified.' : 'Silly Mode off. Safety limits restored.', v ? 'silly' : '', 3200); if (v) Sound.fanfare();
+    });
+    silly.querySelector('label').style.cssText = 'flex:1;font-weight:800;font-size:14px;background:linear-gradient(90deg,#ff4fd8,#ffb14f,#4fffb0,#4fb7ff);-webkit-background-clip:text;background-clip:text;color:transparent';
+    const keys = [
+      ['Right-drag', 'Orbit camera'], ['Middle-drag / Shift+Right-drag', 'Pan camera'], ['Mouse wheel', 'Zoom'], ['W A S D / arrows', 'Move camera'], ['Q / E', 'Rotate camera'], ['R / F', 'Zoom in / out'],
+      ['1 – 6', 'Tools: Select, Add, Insert, Delete, Terrain, Scenery'], ['Click / Shift+click / Ctrl+click', 'Select node / range / toggle'], ['Drag · Shift+drag', 'Move node · change height'],
+      ['PgUp / PgDn', 'Raise / lower selection (Shift = 5 m)'], [', / .', 'Roll selection −/+ 5° (Shift = 15°)'], ['[ / ]', 'Previous / next node'], ['I', 'Insert node at midpoint after selection'],
+      ['Delete', 'Delete selected nodes'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['Ctrl+C / Ctrl+V', 'Copy / paste track section'], ['Ctrl+A', 'Select all nodes'], ['M', 'Mirror selection (or whole track)'],
+      ['G', 'Toggle grid snapping'], ['H', 'Toggle G-force heatmap'], ['C', 'Focus camera on selection (editor) · cycle camera (ride)'], ['T', 'Test ride'], ['Ctrl+S', 'Save'],
+      ['Esc', 'Stop ride / deselect / close dialog'], ['[ / ] (ride)', 'Slower / faster simulation'], ['U (ride)', 'Toggle mph / km/h']];
+    body.append(
+      sec('Silly Mode', silly, el('div', { class: 'hint' }, 'Unlocks the Accelerator (0–600 mph in as little as 0.1 s), low gravity, super-loops and a rainbow train. Removes speed and G limits, and safety warnings become… less serious. Silly coasters are tagged and listed in their own community category.')),
+      sec('Graphics', uiSelect('Quality', [['low', 'Low (fastest)'], ['medium', 'Medium'], ['high', 'High (prettiest)']], S.quality, v => { S.quality = v; save(); applyQuality(); Scenery.rebuild(); if (Editor.design) Editor.rebuild(); toast('Graphics: ' + v + (v === 'low' || R.renderer.getContext().getContextAttributes().antialias !== (v !== 'low') ? ' · anti-aliasing changes after a reload' : '')); }),
+        uiCheck('Show FPS counter', S.showFps, v => { S.showFps = v; save(); $('#fps').classList.toggle('hidden', !v); })),
+      sec('Controls', uiSlider('Camera sensitivity', 0.3, 2.5, 0.05, S.camSens, v => { S.camSens = v; save(); }, v => v.toFixed(2) + '×'),
+        uiCheck('Invert vertical orbit', S.invertOrbit, v => { S.invertOrbit = v; save(); })),
+      sec('Units', uiSelect('Unit system', [['imperial', 'Imperial (mph, ft)'], ['metric', 'Metric (km/h, m)']], S.units, v => { S.units = v; save(); if (Editor.design) { Editor.renderPanel(); Editor.updateBottomBar(); } })),
+      sec('Sound', uiSlider('Volume', 0, 1, 0.05, S.volume, v => { S.volume = v; save(); Sound.setVolume(); }, v => Math.round(v * 100) + '%'), uiCheck('Mute', S.muted, v => { S.muted = v; save(); Sound.setVolume(); })),
+      sec('Profile', el('div', { class: 'field' }, el('label', null, 'Player name'), name)),
+      sec('Keybinds', el('div', { class: 'keys' }, keys.flatMap(([k, d]) => [el('div', null, ...k.split(' / ').flatMap((p, i) => [i ? ' / ' : null, el('kbd', null, p)])), el('div', { class: 'muted' }, d)]))));
+    Modal.open('Settings', body, [el('button', { class: 'primary', onclick: () => Modal.close() }, 'Done')]);
+  },
+  challengesDialog() {
+    const done = Challenges.done(), body = el('div');
+    body.append(el('p', { class: 'muted', style: 'margin-top:0' }, 'Optional goals to test your skills. Goals are checked live in the editor and confirmed by a real test ride. ' + Object.keys(done).length + ' / ' + CHALLENGES.length + ' complete.'));
+    CHALLENGES.forEach(ch => {
+      const locked = ch.silly && !Settings.d.silly;
+      body.append(el('div', { class: 'chal', style: locked ? 'opacity:.55' : '' },
+        el('div', { style: 'font-size:26px' }, done[ch.id] ? '🏆' : ch.silly ? '🤪' : '🎯'),
+        el('div', { class: 'grow' }, el('b', null, ch.name), ' ', ch.silly ? el('span', { class: 'tag silly' }, 'SILLY') : null, done[ch.id] ? el('span', { class: 'done' }, '  ✔ Complete') : null,
+          el('div', { class: 'muted' }, ch.desc), el('div', { class: 'hint' }, ch.goals.map(g => g[0]).join(' · '))),
+        locked ? el('span', { class: 'muted' }, 'Needs Silly Mode') : el('div', { style: 'display:flex;flex-direction:column;gap:4px' },
+          el('button', { class: 'primary', onclick: () => this.newDialog(ch) }, 'New attempt'),
+          Editor.design && this.state === 'editor' ? el('button', { onclick: () => { Challenges.active = ch; Modal.close(); Editor.updateChallengeBox(); Editor.schedulePreview(); } }, 'Use current') : null)));
+    });
+    Modal.open('Challenges', body);
+  },
+  bindInput() {
+    const cv = R.renderer.domElement; let camDrag = null;
+    cv.addEventListener('contextmenu', e => e.preventDefault());
+    cv.addEventListener('pointerdown', e => {
+      cv.focus(); Sound.init();
+      const orbitCam = this.state === 'editor' || (this.state === 'ride' && Ride.cams[Ride.cam] === 'orbit');
+      if (orbitCam && (e.button === 2 || e.button === 1)) { camDrag = { x: e.clientX, y: e.clientY, pan: e.button === 1 || e.shiftKey }; cv.setPointerCapture(e.pointerId); return; }
+      if (this.state === 'editor' && Editor.onDown(e)) cv.setPointerCapture(e.pointerId);
+    });
+    cv.addEventListener('pointermove', e => {
+      if (camDrag) { const dx = e.clientX - camDrag.x, dy = e.clientY - camDrag.y; camDrag.x = e.clientX; camDrag.y = e.clientY; camDrag.pan ? Cam.pan(dx, dy) : Cam.orbit(dx, dy); return; }
+      if (this.state === 'editor') Editor.onMove(e);
+    });
+    const up = e => { if (camDrag) { camDrag = null; return; } if (this.state === 'editor') Editor.onUp(e); };
+    cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+    cv.addEventListener('pointerleave', () => { if (this.state === 'editor') { Editor.ghost.visible = false; $('#cursorInfo').classList.add('hidden'); } });
+    cv.addEventListener('wheel', e => { e.preventDefault(); if (this.state === 'editor' || (this.state === 'ride' && Ride.cams[Ride.cam] === 'orbit')) Cam.zoom(Math.pow(1.0015, e.deltaY * (Settings.d.camSens || 1))); }, { passive: false });
+    window.addEventListener('keydown', e => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if ((tag === 'input' || tag === 'textarea' || tag === 'select') && e.key !== 'Escape') return;
+      const k = e.key.toLowerCase();
+      if (Modal.isOpen) { if (k === 'escape') Modal.close(); return; }
+      if (['w', 'a', 's', 'd', 'q', 'e', 'r', 'f', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'].includes(k) && !e.ctrlKey && !e.metaKey) Cam.keys[k] = true;
+      if (this.state === 'ride') {
+        if (k === 'escape') Ride.stop(); else if (k === 'c') Ride.cycleCam(); else if (k === '[') Ride.cycleSpeed(-1); else if (k === ']') Ride.cycleSpeed(1);
+        else if (k === 'u') Units.toggle(); else if (k === ' ') Ride.restart(); else return;
+        e.preventDefault(); return;
+      }
+      if (this.state === 'editor') { if (Editor.onKey(e, true)) e.preventDefault(); }
+      else if (this.state === 'menu' && k === 'escape') Modal.close();
+    });
+    window.addEventListener('keyup', e => { Cam.keys[e.key.toLowerCase()] = false; if (e.key === 'Shift') Cam.keys.shift = false; });
+    window.addEventListener('blur', () => { Cam.keys = {}; });
+  },
+  renderFrame() { R.renderer.render(R.scene, R.camera); },
+  loop(t) {
+    requestAnimationFrame(tt => this.loop(tt));
+    const dt = Math.min(0.1, Math.max(0, (t - this.last) / 1000)); this.last = t;
+    let focus = null;
+    try {
+      if (this.state === 'menu') focus = Attract.update(dt);
+      else if (this.state === 'editor') { Cam.update(dt); Editor.update(dt); Cam.apply(R.camera); focus = Cam.target; }
+      else if (this.state === 'ride') focus = Ride.update(dt);
+    } catch (err) { console.error(err); }
+    if (Editor.design && Editor.design.rainbow && Train.group.visible === false) { /* idle */ }
+    Env.update(dt, R.camera, focus);
+    Terrain.waterMat.opacity = 0.78 + Math.sin(t / 900) * 0.04;
+    this.renderFrame();
+    this.frames++; this.fpsT += dt;
+    if (this.fpsT > 0.5) { if (Settings.d.showFps) $('#fps').textContent = Math.round(this.frames / this.fpsT) + ' fps · ' + R.renderer.info.render.calls + ' draws'; this.frames = 0; this.fpsT = 0; }
+  }
+};
+
+window.Skyline = { App, Editor, Ride, Sim, Track, Design, Community, Settings, Samples, Ratings };
+window.addEventListener('load', () => {
+  if (!window.THREE) { $('#loading').textContent = 'Could not load Three.js. Check your internet connection.'; return; }
+  try { App.init(); if (Settings.d.showFps) $('#fps').classList.remove('hidden'); }
+  catch (e) { console.error(e); $('#loading').textContent = 'Something went wrong: ' + e.message; }
+});
+
 </script>
 </body>
 </html>
