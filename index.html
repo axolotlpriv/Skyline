@@ -166,6 +166,33 @@ kbd{display:inline-block;background:rgba(255,255,255,.08);border:1px solid rgba(
 .tile svg.ic{width:30px;height:30px;stroke-width:1.6}
 .tile.silly{border-color:rgba(255,79,216,.55);background:linear-gradient(180deg,#46205a,#241238)}
 .tile .pc{width:100%;height:3px;margin-top:-2px}
+.bconsole{display:flex;gap:10px;align-items:stretch;width:100%;min-width:0}
+#dock.builder{height:196px;left:76px}
+body.building #ratingCard{bottom:222px}
+body.building #statusLine{bottom:354px}
+body.building #challengeBox{display:none}
+#dock.builder #dockTiles{overflow:visible;padding-top:6px}
+.btypes{display:grid;grid-template-columns:1fr 1fr;gap:4px;width:214px;flex-shrink:0;align-content:start}
+.btype{padding:5px 6px;font-size:10.5px;letter-spacing:.04em;white-space:nowrap;overflow:hidden;justify-content:flex-start;gap:5px;position:relative;overflow:hidden}
+.btype i{position:absolute;left:0;top:0;bottom:0;width:3px}
+.bctls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;flex:1;min-width:0}
+.bctl{background:rgba(255,255,255,.04);border:1px solid var(--edge);padding:7px 8px 9px;display:flex;flex-direction:column;gap:7px;clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);transition:opacity .2s}
+.bctl.dim{opacity:.4;pointer-events:none}
+.bctl .bl{font:700 11px var(--fd);letter-spacing:.2em;color:var(--ink3);text-transform:uppercase;text-align:center}
+.bctl .brow{display:flex;align-items:center;justify-content:space-between;gap:4px}
+.bctl .bv{font:700 16px var(--fd);overflow:hidden;text-overflow:ellipsis;letter-spacing:.03em;text-align:center;flex:1;white-space:nowrap;font-variant-numeric:tabular-nums}
+.chev{width:30px;height:30px;padding:0;flex-shrink:0;border-radius:3px}
+.chev:active{transform:scale(.88)}
+.bact{display:flex;flex-direction:column;gap:6px;width:170px;flex-shrink:0}
+.bbuild{height:46px;font-size:17px;letter-spacing:.14em;clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%)}
+.brow2{display:flex;gap:4px}.brow2 button{flex:1;padding:6px 0}
+.bauto{flex:2!important;font-size:10.5px!important;letter-spacing:.06em!important}
+.bread{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;font:600 11.5px var(--fd);letter-spacing:.05em}
+.bread div{display:flex;justify-content:space-between;gap:4px;color:var(--ink2)}
+.bread b{color:#fff}.bread .warn,.bread .warn b{color:var(--warn)}.bread .bad,.bread .bad b{color:var(--bad)}
+.bkeys{display:flex;align-items:center;gap:5px;font:600 11px var(--fd);letter-spacing:.06em;color:var(--ink3);white-space:nowrap}
+.bkeys kbd{font-size:10px;padding:0 4px}
+@media (max-width:1300px){.bkeys{display:none}}
 /* rating card */
 #ratingCard{position:fixed;left:76px;bottom:14px;width:252px;height:126px;padding:10px 14px;display:flex;flex-direction:column;--ch:14px}
 #ratingCard .gauges{display:flex;justify-content:space-between}
@@ -175,7 +202,7 @@ kbd{display:inline-block;background:rgba(255,255,255,.08);border:1px solid rgba(
 .gauge .l{font:700 10px var(--fd);letter-spacing:.16em;color:var(--ink3);margin-top:-6px}
 #ratingCard .meta{display:flex;align-items:center;justify-content:space-between;margin-top:6px;font:600 13px var(--fd);letter-spacing:.05em}
 #ratingCard .stars{color:#ffc547;letter-spacing:2px;font-size:15px;text-shadow:0 0 8px rgba(255,197,71,.5)}
-#statusLine{position:fixed;left:76px;bottom:146px;max-width:560px;font:600 13px var(--fd);letter-spacing:.04em;padding:6px 12px;display:flex;align-items:center;gap:8px;--ch:8px}
+#statusLine{position:fixed;left:76px;bottom:146px;max-width:252px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 13px var(--fd);letter-spacing:.04em;padding:6px 12px;display:flex;align-items:center;gap:8px;--ch:8px}
 #statusLine.ok{color:var(--good)}#statusLine.warn{color:var(--warn)}#statusLine.silly{color:#ffc2f2}
 #challengeBox{position:fixed;left:76px;top:84px;width:270px;padding:12px 14px;font-size:13px;border-color:rgba(255,197,71,.45)!important}
 #challengeBox h4{margin:0 0 6px;color:var(--warn);font:700 16px var(--fd);letter-spacing:.08em;text-transform:uppercase}
@@ -3474,6 +3501,7 @@ const Editor = {
   },
   /* ---------- design lifecycle ---------- */
   load(d) {
+    Builder.stack = []; if (Builder.active) { Builder.active = false; Builder.clearGhost(); }
     this.design = d; Scenery.items = d.scenery = d.scenery || [];
     Terrain.deserialize(d.terrain); Env.load(d.env); Scenery.rebuild();
     this.sel = []; this.primary = d.nodes.length - 1; this.preview = null; this.lastHeat = null;
@@ -3506,18 +3534,21 @@ const Editor = {
     this.hidx = this.history.length - 1; this.updateUndoButtons();
   },
   restore(sn) {
+    Builder.stack = [];
     const o = JSON.parse(sn.j); Object.assign(this.design, o); Scenery.items = this.design.scenery = o.scenery;
     let terr = false; if (sn.w !== Terrain.water) terr = true;
     for (let i = 0; i < sn.h.length && !terr; i += 7) if (sn.h[i] !== Terrain.h[i]) terr = true;
     if (terr || true) { Terrain.h.set(sn.h); Terrain.water = sn.w; Terrain.update(); }
     this.sel = this.sel.filter(i => i < this.design.nodes.length); if (this.primary >= this.design.nodes.length) this.primary = this.design.nodes.length - 1;
     Scenery.rebuild(); this.rebuild(); this.renderPanel();
+    if (Builder.active) Builder.refresh(false);
   },
   undo() { if (this.hidx > 0) { this.hidx--; this.restore(this.history[this.hidx]); this.updateUndoButtons(); Sound.ui('undo'); } },
   redo() { if (this.hidx < this.history.length - 1) { this.hidx++; this.restore(this.history[this.hidx]); this.updateUndoButtons(); Sound.ui('redo'); } },
   updateUndoButtons() { $('#btnUndo').disabled = this.hidx <= 0; $('#btnRedo').disabled = this.hidx >= this.history.length - 1; },
   commit(rebuildPanel = true) {
     this.pushHistory(); this.rebuild(); if (rebuildPanel) this.renderPanel();
+    if (Builder.active) Builder.refresh(false);
     clearTimeout(this._as); this._as = setTimeout(() => this.autosave(), 1500);
   },
   autosave() { if (this.design && App.state !== 'menu') Store.set('sky.autosave', this.serialize(true)); },
@@ -3574,6 +3605,7 @@ const Editor = {
     this.handleScale = scale;
   },
   setVisible(v) {
+    if (Builder.ghost) Builder.ghost.visible = v;
     if (this.handles) this.handles.visible = v; if (this.stems) this.stems.visible = v;
     this.ghost.visible = false; this.ring.visible = false; if (!v) this.warnMark.visible = false;
   },
@@ -3772,6 +3804,7 @@ const Editor = {
     return false;
   },
   update(dt) {
+    Builder.update(dt);
     if (this.dragDirty) { this.dragDirty = false; this.rebuild(true); }
     if (this.painting && !this.painting.scenery) {
       const p = this.groundAtMouse(this.mouse.x, this.mouse.y);
@@ -3790,6 +3823,8 @@ const Editor = {
   onKey(e, down) {
     const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
     if (!down) return false;
+    if (Builder.active && !ctrl && Builder.onKey(e)) return true;
+    if (k === 'b' && !ctrl) { this.dockTab = this.dockTab === 'builder' ? 'elements' : 'builder'; this.renderDock(); return true; }
     if (ctrl && k === 'z') { e.shiftKey ? this.redo() : this.undo(); return true; }
     if (ctrl && k === 'y') { this.redo(); return true; }
     if (ctrl && k === 'c') { this.copy(); return true; }
@@ -3837,7 +3872,8 @@ const Editor = {
   buildToolbar() {
     const tb = $('#toolbar'); tb.innerHTML = '';
     TOOLS.forEach(t => tb.append(el('button', { 'data-tool': t.id, 'data-tip': t.name, 'data-key': t.key, onclick: () => this.setTool(t.id) }, icon(t.icon), el('span', { class: 'k' }, t.key))));
-    tb.append(el('div', { class: 'sep' }), el('button', { 'data-tip': 'Focus camera on selection', 'data-key': 'C', onclick: () => this.focusSelection() }, icon('target')));
+    tb.append(el('div', { class: 'sep' }), el('button', { id: 'railBuild', 'data-tip': 'Piece builder (Planet Coaster style)', 'data-key': 'B', onclick: () => { this.dockTab = this.dockTab === 'builder' ? 'elements' : 'builder'; this.renderDock(); } }, icon('straight')),
+      el('button', { 'data-tip': 'Focus camera on selection', 'data-key': 'C', onclick: () => this.focusSelection() }, icon('target')));
     this.setTool('select');
   },
   bindUI() {
@@ -3877,8 +3913,15 @@ const Editor = {
     const tabsEl = $('#dockTabs'), tiles = $('#dockTiles'); if (!tabsEl) return;
     tabsEl.innerHTML = ''; tiles.innerHTML = '';
     const tab = (id, l) => el('button', { class: this.dockTab === id ? 'active' : '', onclick: () => { this.dockTab = id; this.renderDock(); } }, l);
-    tabsEl.append(tab('elements', 'Elements'), tab('pieces', 'Track Pieces'));
+    tabsEl.append(tab('builder', 'Piece Builder'), tab('elements', 'Elements'), tab('pieces', 'Track Pieces'));
     const silly = Settings.d.silly, sillyBig = silly && this.design.superLoops;
+    $('#dock').classList.toggle('builder', this.dockTab === 'builder'); document.body.classList.toggle('building', this.dockTab === 'builder');
+    if (this.dockTab === 'builder') {
+      if (!Builder.active) { Builder.enter(); if (!Builder.active) { this.renderDock(); return; } }
+      Builder.renderConsole(tabsEl, tiles);
+      return;
+    }
+    if (Builder.active) Builder.exit();
     if (this.dockTab === 'elements') {
       const max = silly ? (sillyBig ? 1000 : 50) : 2, L0 = Math.log(0.25), L1 = Math.log(max);
       const rng = el('input', { type: 'range', min: 0, max: 1000, step: 1 }), val = el('span', { class: 'val' });
@@ -4099,6 +4142,272 @@ function numInput(v, onChange, step) {
   i.addEventListener('keydown', e => e.stopPropagation());
   return i;
 }
+
+
+/* =====================================================================
+   PIECE BUILDER — Planet Coaster–style construction. A ghost piece hangs
+   off the end of the track; you shape its length, curve, slope and bank,
+   then build it. Every piece becomes ordinary spline nodes, so physics,
+   ratings and test rides work exactly as for hand-placed track.
+   ===================================================================== */
+const D2R = Math.PI / 180;
+const Builder = {
+  active: false, stack: [], ghost: null, head: null, info: null, userOrbit: false, pulse: 0,
+  p: { type: 'track', len: 16, curve: 0, slope: 0, bank: 0, auto: true },
+  limits() { const s = Settings.d.silly; return { len: [2, s ? 5000 : 120], curve: [-180, 180], slope: [-180, 180], bank: [-180, 180] }; },
+  enter() {
+    if (this.active) return;
+    const d = Editor.design;
+    if (d.closed) {
+      Modal.confirm('Open the circuit?', 'This track is a closed circuit. To keep building piece by piece, the last segment back to the station has to be removed. You can close it again with Complete Circuit.', 'Open & build', () => { d.closed = false; Editor.commit(); this.enter(); });
+      Editor.dockTab = 'elements'; return;
+    }
+    this.active = true; this.userOrbit = false; Editor.dockTab = 'builder';
+    if (Editor.tool !== 'select') Editor.setTool('select');
+    Editor.setSel([], d.nodes.length - 1);
+    this.refresh(true); Sound.ui('open');
+  },
+  exit() {
+    if (!this.active) return;
+    this.active = false; this.clearGhost(); Sound.ui('close');
+  },
+  clearGhost() { if (this.ghost) { R.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; } },
+  // where the next piece starts: last node, the track's direction there, its bank and speed
+  headInfo() {
+    const d = Editor.design, tr = Editor.track, n = d.nodes.length, last = d.nodes[n - 1];
+    const pos = new V3(last.x, last.y, last.z), dir = new V3(1, 0, 0);
+    if (tr && tr.ok && !tr.closed) dir.set(tr.tx[tr.N - 1], tr.ty[tr.N - 1], tr.tz[tr.N - 1]);
+    else if (n >= 2) { const a = d.nodes[n - 2]; dir.set(last.x - a.x, last.y - a.y, last.z - a.z); }
+    dir.normalize();
+    const roll = last.auto && tr && tr.autoRoll ? tr.autoRoll[n - 1] : (last.roll || 0);
+    const speed = tr && tr.ok && !tr.closed ? tr.prof[tr.N - 1] : 3;
+    return { pos, yaw: Math.atan2(dir.z, dir.x), pitch: Math.asin(clamp(dir.y, -1, 1)), roll, speed };
+  },
+  // shape a piece as nodes: yaw and pitch sweep linearly along its length (constant-rate arc)
+  gen(h, p) {
+    const st = p.type === 'station', L = clamp(p.len, 2, 1e6);
+    const dy = st ? 0 : p.curve * D2R, p0 = h.pitch, p1 = st ? 0 : p.slope * D2R;
+    const r0 = h.roll, r1 = st ? 0 : p.bank, dr = wrapDeg(r1 - r0);
+    const n = Math.max(1, Math.ceil(Math.max(Math.abs(dy) / (26 * D2R), Math.abs(p1 - p0) / (26 * D2R), L / 18)));
+    const M = n * 24, step = L / M, pos = h.pos.clone(), out = [], pts = [];
+    for (let i = 1; i <= M; i++) {
+      const t = i / M, yaw = h.yaw + dy * t, pitch = p0 + (p1 - p0) * t;
+      pos.x += Math.cos(pitch) * Math.cos(yaw) * step; pos.y += Math.sin(pitch) * step; pos.z += Math.cos(pitch) * Math.sin(yaw) * step;
+      pts.push(pos.clone());
+      if (i % 24 === 0) out.push(newNode(+pos.x.toFixed(2), +pos.y.toFixed(2), +pos.z.toFixed(2), { roll: +wrapDeg(r0 + dr * t).toFixed(1), auto: p.auto && !st, type: i === M ? 'track' : p.type }));
+    }
+    const endYaw = h.yaw + dy, endDir = new V3(Math.cos(p1) * Math.cos(endYaw), Math.sin(p1), Math.cos(p1) * Math.sin(endYaw));
+    return { nodes: out, pts, end: pos.clone(), endDir, dy, L };
+  },
+  // energy estimate at the end of the ghost piece
+  estimate(h, g, p) {
+    const st = STYLES[Editor.design.style] || STYLES.steel, grav = G0 * (Editor.design.physics.lowGravity ? 0.3 : 1);
+    let v2 = h.speed * h.speed;
+    const P = PIECES[p.type] || PIECES.track, tv = P.speed || 0;
+    if (p.type === 'lift' || p.type === 'station') v2 = Math.max(v2, tv * tv);
+    if (p.type === 'launch' || p.type === 'accel') v2 = Math.max(v2, tv * tv);
+    let min = v2, prevY = h.pos.y;
+    const seg = g.L / g.pts.length;
+    for (const q of g.pts) {
+      v2 -= 2 * grav * (q.y - prevY) + 2 * (st.mu * grav * 1.3 + (Editor.design.physics.vacuum ? 0 : st.drag) * Math.max(0, v2)) * seg; prevY = q.y;
+      if (p.type === 'lift' && v2 < tv * tv) v2 = tv * tv;
+      if (p.type === 'brake' || p.type === 'block') v2 = Math.min(v2, tv * tv);
+      min = Math.min(min, v2);
+    }
+    let under = false;
+    for (const q of g.pts) if (q.y < Terrain.heightAt(q.x, q.z) - 0.4) { under = true; break; }
+    const R = Math.abs(g.dy) > 0.01 ? g.L / Math.abs(g.dy) : Infinity, v = Math.sqrt(Math.max(0, v2));
+    return { v, stall: min < 0.5, under, R, latG: isFinite(R) ? v * v / (R * G0) : 0, height: g.end.y - Terrain.groundAt(g.end.x, g.end.z) };
+  },
+  refresh(follow) {
+    if (!this.active) return;
+    const d = Editor.design;
+    if (!d.nodes.length) return;
+    this.head = this.headInfo();
+    const g = this.gen(this.head, this.p);
+    this.cur = g; this.info = this.estimate(this.head, g, this.p);
+    this.drawGhost(g);
+    this.updateReadout();
+    if (follow) this.follow(g);
+  },
+  drawGhost(g) {
+    this.clearGhost();
+    const d = Editor.design, ctx = d.nodes.slice(Math.max(0, d.nodes.length - 8)).map(n => Object.assign({}, n));
+    const hi = ctx.length - 1;
+    ctx[hi].type = this.p.type;
+    const mini = { nodes: ctx.concat(g.nodes), style: d.style, closed: false, physics: d.physics };
+    const tr = new Track(mini); if (!tr.ok) return;
+    const k0 = clamp(Math.round(tr.nodeS[hi] / tr.ds), 0, tr.N - 2);
+    const bad = this.info.under && !Settings.d.silly, warn = this.info.stall;
+    const col = bad ? 0xff3b5c : warn ? 0xffa53a : 0x3fe0d0;
+    const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthWrite: false });
+    mat.color.multiplyScalar(1.6);
+    const grp = new THREE.Group(), ks = TrackRenderer.ringList(tr, 1, k0, tr.N - 1, false), inv = d.style === 'inverted';
+    for (const [ox, oy, prof] of [[0.55, 0, PROF.circle(0.09, 6)], [-0.55, 0, PROF.circle(0.09, 6)], [0, inv ? 0.78 : -0.5, PROF.circle(inv ? 0.3 : 0.2, 8)]])
+      grp.add(new THREE.Mesh(TrackRenderer.sweep(tr, ks, ox, oy, prof, '#ffffff'), mat));
+    // ties every couple of metres so the piece reads as track
+    for (let k = k0; k < tr.N; k += 3) {
+      const tie = new THREE.Mesh(this.tieGeo || (this.tieGeo = new THREE.BoxGeometry(1.25, 0.08, 0.12)), mat);
+      tie.matrixAutoUpdate = false; tie.matrix.makeBasis(_a.set(tr.sx[k], tr.sy[k], tr.sz[k]), _b.set(tr.ux[k], tr.uy[k], tr.uz[k]), _d.set(tr.tx[k], tr.ty[k], tr.tz[k])).setPosition(tr.px[k], tr.py[k], tr.pz[k]);
+      grp.add(tie);
+    }
+    // build-head arrow + height line
+    const arrow = new THREE.Mesh(this.arrowGeo || (this.arrowGeo = new THREE.ConeGeometry(0.9, 2.2, 14).rotateX(Math.PI / 2)), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.9, depthTest: false }));
+    arrow.position.copy(g.end).addScaledVector(g.endDir, 1.6); arrow.lookAt(arrow.position.clone().add(g.endDir)); arrow.renderOrder = 9; grp.add(arrow);
+    this.arrow = arrow;
+    const gy = Terrain.groundAt(g.end.x, g.end.z);
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([g.end, new V3(g.end.x, gy, g.end.z)]), new THREE.LineDashedMaterial({ color: col, dashSize: 0.8, gapSize: 0.5, transparent: true, opacity: 0.7 }));
+    line.computeLineDistances(); grp.add(line);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(1.2, 1.5, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthWrite: false }));
+    ring.position.set(g.end.x, gy + 0.08, g.end.z); grp.add(ring); this.ring = ring;
+    R.scene.add(grp); this.ghost = grp;
+  },
+  follow(g) {
+    // camera glides to sit behind and above the build head, looking down the track
+    const h = this.head, mid = h.pos.clone().lerp(g.end, 0.62);
+    Cam.focus(mid, clamp(g.L * 1.35 + 30, 30, Settings.d.silly ? 4000 : 200));
+    if (!this.userOrbit) {
+      // look down the piece from behind the build head (blend of start and end headings)
+      const dx = Math.cos(h.yaw) + g.endDir.x * 0.6, dz = Math.sin(h.yaw) + g.endDir.z * 0.6;
+      let y = Math.atan2(-dx, -dz);
+      if (Math.hypot(dx, dz) < 0.2) y = Cam.yawG;                                      // vertical: keep the current heading
+      while (y - Cam.yawG > Math.PI) y -= Math.PI * 2; while (y - Cam.yawG < -Math.PI) y += Math.PI * 2;
+      Cam.yawG = y; Cam.pitchG = 0.42;
+    }
+  },
+  update(dt) {
+    if (!this.active || !this.arrow) return;
+    this.pulse += dt;
+    const s = 1 + Math.sin(this.pulse * 5) * 0.12; this.arrow.scale.setScalar(s);
+    if (this.ring) { this.ring.scale.setScalar(1 + (this.pulse * 0.8) % 1 * 0.8); this.ring.material.opacity = 0.6 * (1 - (this.pulse * 0.8) % 1); }
+  },
+  set(k, v) {
+    const L = this.limits()[k];
+    if (L) v = clamp(v, L[0], L[1]);
+    if (k === 'slope' || k === 'bank') v = wrapDeg(v);
+    if (this.p[k] === v) return;
+    this.p[k] = v; Sound.ui('tick'); this.refresh(true); this.syncConsole();
+  },
+  nudge(k, dir, fine) {
+    const step = { len: fine ? 0.5 : 2, curve: fine ? 5 : 15, slope: fine ? 2.5 : 7.5, bank: fine ? 5 : 15 }[k];
+    let v = this.p[k] + dir * step;
+    if (k !== 'len') v = Math.round(v / step) * step;
+    this.set(k, v);
+  },
+  build() {
+    const d = Editor.design, g = this.cur;
+    if (!g) return;
+    if (this.info.under && !Settings.d.silly) { Sound.ui('error'); toast('That piece goes underground. Raise the slope or turn on Silly Mode.', 'bad'); return; }
+    const head = d.nodes[d.nodes.length - 1], prev = { type: head.type, speed: head.speed, time: head.time };
+    head.type = this.p.type; delete head.speed; delete head.time;
+    if (this.p.type === 'accel') d.physics.vacuum = true;
+    d.nodes.push(...g.nodes.map(n => Object.assign({}, n)));
+    this.stack.push({ count: g.nodes.length, params: Object.assign({}, this.p), prev });
+    this.userOrbit = false;
+    Editor.primary = d.nodes.length - 1; Editor.sel = [];
+    Editor.commit();
+    Sound.ui(this.p.type === 'track' ? 'place' : 'element');
+    if (this.p.type === 'station') this.p.type = 'track';
+    this.refresh(true); this.syncConsole();
+  },
+  // pick the last piece back up into the ghost so it can be reshaped (or remove a hand-placed node)
+  pickUp() {
+    const d = Editor.design, top = this.stack[this.stack.length - 1];
+    if (d.nodes.length <= 2) { Sound.ui('error'); toast('Nothing left to remove: keep at least the station.', 'bad'); return; }
+    if (top && d.nodes.length - top.count >= 1) {
+      this.stack.pop(); d.nodes.splice(d.nodes.length - top.count, top.count);
+      const head = d.nodes[d.nodes.length - 1]; head.type = top.prev.type; if (top.prev.speed != null) head.speed = top.prev.speed; if (top.prev.time != null) head.time = top.prev.time;
+      this.p = Object.assign({}, top.params);
+    } else d.nodes.pop();
+    Editor.primary = d.nodes.length - 1;
+    Editor.commit(); Sound.ui('undo');
+    this.refresh(true); this.syncConsole();
+  },
+  complete() {
+    const d = Editor.design;
+    if (d.nodes.length < 3) { toast('Build a few pieces first', 'bad'); return; }
+    d.closed = true; Editor.commit();
+    this.exit(); Editor.dockTab = 'elements'; Editor.renderDock();
+    toast('Circuit closed! The last node now links back to the station. Smooth it out with the node tools if needed.', 'good', 4200);
+  },
+  onKey(e) {
+    const k = e.key.toLowerCase(), f = e.shiftKey;
+    const map = { arrowleft: ['curve', -1], arrowright: ['curve', 1], arrowup: ['slope', 1], arrowdown: ['slope', -1], z: ['bank', 1], x: ['bank', -1], '[': ['len', -1], ']': ['len', 1] };
+    if (map[k]) { this.nudge(map[k][0], map[k][1], f); return true; }
+    if (k === 'enter' || k === ' ') { this.build(); return true; }
+    if (k === 'backspace' || k === 'delete') { this.pickUp(); return true; }
+    if (k === 'escape') { this.exit(); Editor.dockTab = 'elements'; Editor.renderDock(); return true; }
+    if (k === 'r') { Object.assign(this.p, { curve: 0, slope: 0, bank: 0 }); this.refresh(true); this.syncConsole(); return true; }
+    if (k === 'v') { this.p.auto = !this.p.auto; this.refresh(true); this.syncConsole(); return true; }
+    return false;
+  },
+  /* ---------- console UI (lives in the build dock) ---------- */
+  fmt(k, v) {
+    if (k === 'len') return Units.len(v, v < 20 ? 1 : 0);
+    if (k === 'curve') return v === 0 ? '0°' : Math.abs(v) + '° ' + (v < 0 ? 'L' : 'R');
+    if (k === 'bank') return this.p.auto ? 'AUTO' : v === 0 ? '0°' : Math.abs(v) + '° ' + (v > 0 ? 'L' : 'R');
+    return (v > 0 ? '+' : '') + v + '°';
+  },
+  renderConsole(tabsEl, tiles) {
+    const silly = Settings.d.silly;
+    tabsEl.append(el('div', { class: 'opts' }, el('span', { class: 'bkeys' }, el('kbd', null, '←→'), 'curve', el('kbd', null, '↑↓'), 'slope', el('kbd', null, 'Z X'), 'bank', el('kbd', null, '[ ]'), 'length', el('kbd', null, 'Enter'), 'build')));
+    const wrap = el('div', { class: 'bconsole' });
+    const types = el('div', { class: 'btypes' });
+    const pic = { track: 'straight', station: 'station', lift: 'lift', brake: 'brake', block: 'block', launch: 'launch', accel: 'rocket' };
+    PNAMES.filter(t => !PIECES[t].silly || silly).forEach(t => types.append(el('button', { class: 'btype' + (this.p.type === t ? ' active' : ''), 'data-type': t, 'data-tip': PIECES[t].desc, onclick: () => { this.p.type = t; this.refresh(true); this.syncConsole(); } }, icon(pic[t], 16), { track: 'Track', station: 'Station', lift: 'Lift', brake: 'Brakes', block: 'Block', launch: 'Launch', accel: 'Accel' }[t], el('i', { style: 'background:' + PIECES[t].color }))));
+    wrap.append(types);
+    const ctl = (k, label, minus, plus, ic1, ic2) => {
+      const L = this.limits()[k], rng = el('input', { type: 'range', min: L[0], max: L[1], step: k === 'len' ? 0.5 : 1 });
+      if (k === 'len' && silly) { rng.max = 300; }
+      rng.value = this.p[k]; rng.style.setProperty('--p', ((this.p[k] - rng.min) / (rng.max - rng.min) * 100) + '%');
+      rng.addEventListener('input', () => { rng.style.setProperty('--p', ((rng.value - rng.min) / (rng.max - rng.min) * 100) + '%'); this.set(k, +rng.value); });
+      const rep = (dir) => { let t1, t2; const go = ev => { this.nudge(k, dir, ev.shiftKey); }; return {
+        onpointerdown: ev => { go(ev); t1 = setTimeout(() => { t2 = setInterval(() => go(ev), 80); }, 320); },
+        onpointerup: () => { clearTimeout(t1); clearInterval(t2); }, onpointerleave: () => { clearTimeout(t1); clearInterval(t2); } }; };
+      return el('div', { class: 'bctl', 'data-k': k },
+        el('div', { class: 'bl' }, label),
+        el('div', { class: 'brow' }, el('button', Object.assign({ class: 'chev', 'data-sound': 'none' }, rep(-1)), icon(ic1, 15)), el('b', { class: 'bv' }, this.fmt(k, this.p[k])), el('button', Object.assign({ class: 'chev', 'data-sound': 'none' }, rep(1)), icon(ic2, 15))),
+        rng);
+    };
+    const bankCtl = ctl('bank', 'Bank', 0, 0, 'redo', 'undo');
+    if (this.p.auto) bankCtl.classList.add('dim');
+    wrap.append(el('div', { class: 'bctls' }, ctl('len', 'Length', 0, 0, 'lower', 'raise'), ctl('curve', 'Curve', 0, 0, 'undo', 'redo'), ctl('slope', 'Slope', 0, 0, 'lower', 'raise'), bankCtl));
+    const auto = el('button', { class: 'bauto' + (this.p.auto ? ' active' : ''), 'data-tip': 'Auto-bank: the track tilts into turns by itself', 'data-key': 'V', onclick: () => { this.p.auto = !this.p.auto; this.refresh(true); this.syncConsole(); } }, 'Auto bank');
+    const read = el('div', { class: 'bread' });
+    wrap.append(el('div', { class: 'bact' },
+      el('button', { class: 'primary bbuild', 'data-tip': 'Build this piece', 'data-key': 'Enter', 'data-sound': 'none', onclick: () => this.build() }, icon('add', 18), 'Build'),
+      el('div', { class: 'brow2' },
+        el('button', { 'data-tip': 'Pick up the last piece to reshape it', 'data-key': 'Backspace', 'data-sound': 'none', onclick: () => this.pickUp() }, icon('undo', 15)),
+        el('button', { 'data-tip': 'Reset to a straight, level piece', 'data-key': 'R', onclick: () => { Object.assign(this.p, { curve: 0, slope: 0, bank: 0 }); this.refresh(true); this.syncConsole(); } }, icon('restart', 15)),
+        el('button', { 'data-tip': 'Complete circuit: link back to the station', onclick: () => this.complete() }, icon('flag', 15)),
+        auto),
+      read));
+    tiles.append(wrap);
+    this.updateReadout();
+  },
+  syncConsole() {
+    const root = document.querySelector('.bconsole'); if (!root) return;
+    for (const k of ['len', 'curve', 'slope', 'bank']) {
+      const c = root.querySelector(`.bctl[data-k="${k}"]`); if (!c) continue;
+      c.querySelector('.bv').textContent = this.fmt(k, this.p[k]);
+      const r = c.querySelector('input'); if (+r.value !== this.p[k]) { r.value = this.p[k]; r.style.setProperty('--p', ((r.value - r.min) / (r.max - r.min) * 100) + '%'); }
+      if (k === 'bank') { c.classList.toggle('dim', this.p.auto); c.querySelector('.bv').textContent = this.fmt(k, this.p[k]); }
+    }
+    root.querySelectorAll('.btype').forEach(b => b.classList.toggle('active', b.dataset.type === this.p.type));
+    const a = root.querySelector('.bauto'); if (a) a.classList.toggle('active', this.p.auto);
+    this.updateReadout();
+  },
+  updateReadout() {
+    const r = document.querySelector('.bread'), i = this.info; if (!r || !i) return;
+    r.innerHTML = '';
+    const line = (label, val, cls) => r.append(el('div', { class: cls || '' }, el('span', null, label), el('b', null, val)));
+    line('Speed', Units.speed(i.v, 0), i.stall ? 'warn' : '');
+    line('Height', Units.len(i.height));
+    if (isFinite(i.R)) line('Radius', Units.len(i.R), i.latG > 2.5 && !this.p.auto ? 'warn' : '');
+    if (i.under && !Settings.d.silly) line('!', 'Underground', 'bad');
+    else if (i.stall) line('!', 'Too slow: add a lift', 'warn');
+  }
+};
 
 
 /* =====================================================================
@@ -4383,8 +4692,11 @@ const App = {
     $('#sillyTop').innerHTML = on ? '<span class="tag silly">Silly Mode</span>' : '';
     $('#menuSilly').innerHTML = on ? '<span class="tag silly" style="margin-left:8px">Silly Mode on</span>' : '';
   },
-  toMenu() { if (Ride.active) Ride.stop(); Editor.autosave(); Modal.close(); Challenges.active = null; this.setState('menu'); Attract.start(); },
-  openDesign(d) { Modal.close(); if (Ride.active) Ride.stop(); Attract.sim = null; Editor.load(d); this.setState('editor'); Editor.showTab(d.nodes.length <= 2 ? 'build' : 'track'); },
+  toMenu() { if (Ride.active) Ride.stop(); if (Builder.active) { Builder.exit(); Editor.dockTab = 'elements'; } document.body.classList.remove('building'); Editor.autosave(); Modal.close(); Challenges.active = null; this.setState('menu'); Attract.start(); },
+  openDesign(d) {
+    Modal.close(); if (Ride.active) Ride.stop(); Attract.sim = null; Editor.load(d); this.setState('editor'); Editor.showTab('track');
+    if (d.nodes.length <= 2 && !d.closed) { Editor.dockTab = 'builder'; Editor.renderDock(); }   // blank canvas starts in the piece builder
+  },
   bindMenu() {
     document.querySelectorAll('#menu [data-act]').forEach(b => b.addEventListener('click', () => {
       Sound.init();
@@ -4478,6 +4790,7 @@ const App = {
       ['PgUp / PgDn', 'Raise / lower selection (Shift = 5 m)'], [', / .', 'Roll selection −/+ 5° (Shift = 15°)'], ['[ / ]', 'Previous / next node'], ['I', 'Insert node at midpoint after selection'],
       ['Delete', 'Delete selected nodes'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['Ctrl+C / Ctrl+V', 'Copy / paste track section'], ['Ctrl+A', 'Select all nodes'], ['M', 'Mirror selection (or whole track)'],
       ['G', 'Toggle grid snapping'], ['H', 'Toggle G-force heatmap'], ['C', 'Focus camera on selection (editor) · cycle camera (ride)'], ['T', 'Test ride'], ['Ctrl+S', 'Save'],
+      ['B', 'Piece builder (Planet Coaster style)'], ['← → / ↑ ↓ / Z X / [ ]', 'Builder: curve / slope / bank / length (Shift = fine)'], ['Enter · Backspace', 'Builder: build piece · pick up last piece'], ['V · R', 'Builder: auto-bank · reset piece'],
       ['Esc', 'Stop ride / deselect / close dialog'], ['P', 'Photo mode (hide the interface)'], ['[ / ] (ride)', 'Slower / faster simulation'], ['U (ride)', 'Toggle mph / km/h']];
     body.append(
       sec('Silly Mode', silly, el('div', { class: 'hint' }, 'No limits: any height, any size, launches up to 1,000,000 mph with the Accelerator, low gravity, vacuum tubes, super-loops and a rainbow train. Speed and G limits are removed and safety warnings become… less serious. Silly coasters are tagged and listed in their own community category.')),
@@ -4521,7 +4834,7 @@ const App = {
     cv.addEventListener('pointerdown', e => {
       cv.focus(); Sound.init();
       const orbitCam = this.state === 'editor' || (this.state === 'ride' && Ride.cams[Ride.cam] === 'orbit');
-      if (orbitCam && (e.button === 2 || e.button === 1)) { camDrag = { x: e.clientX, y: e.clientY, pan: e.button === 1 || e.shiftKey }; cv.setPointerCapture(e.pointerId); return; }
+      if (orbitCam && (e.button === 2 || e.button === 1)) { camDrag = { x: e.clientX, y: e.clientY, pan: e.button === 1 || e.shiftKey }; if (!camDrag.pan) Builder.userOrbit = true; cv.setPointerCapture(e.pointerId); return; }
       if (this.state === 'editor' && Editor.onDown(e)) cv.setPointerCapture(e.pointerId);
     });
     cv.addEventListener('pointermove', e => {
@@ -4537,7 +4850,8 @@ const App = {
       if ((tag === 'input' || tag === 'textarea' || tag === 'select') && e.key !== 'Escape') return;
       const k = e.key.toLowerCase();
       if (Modal.isOpen) { if (k === 'escape') Modal.close(); return; }
-      if (['w', 'a', 's', 'd', 'q', 'e', 'r', 'f', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'].includes(k) && !e.ctrlKey && !e.metaKey) Cam.keys[k] = true;
+      const builderKeys = this.state === 'editor' && Builder.active ? ['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'r'] : [];
+      if (['w', 'a', 's', 'd', 'q', 'e', 'r', 'f', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'].includes(k) && !builderKeys.includes(k) && !e.ctrlKey && !e.metaKey) Cam.keys[k] = true;
       if (this.state === 'ride') {
         if (k === 'escape') { document.body.classList.remove('photo'); Ride.stop(); } else if (k === 'c') Ride.cycleCam(); else if (k === '[') Ride.cycleSpeed(-1); else if (k === ']') Ride.cycleSpeed(1);
         else if (k === 'u') Units.toggle(); else if (k === ' ') Ride.restart(); else return;
