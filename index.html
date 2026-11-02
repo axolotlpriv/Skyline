@@ -395,6 +395,13 @@ body.pc #dock{right:14px}
 @keyframes titleOut{to{opacity:0;transform:scale(1.06);filter:blur(6px)}}
 @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 body.title #menu{display:none!important}
+
+#hudMap{right:20px;bottom:18px;width:212px;height:212px;padding:6px;--ch:12px}
+#miniMap{width:200px;height:200px;display:block}
+#pause{position:fixed;inset:0;z-index:45;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,rgba(4,8,18,.5),rgba(2,4,10,.88));backdrop-filter:blur(6px);animation:fadeIn .25s}
+#pause .pbox{display:flex;flex-direction:column;gap:6px;min-width:300px;padding:26px 30px;align-items:stretch;animation:modalIn .35s var(--spring);--ch:18px;position:relative}
+#pause h2{margin:0 0 14px;font:700 34px var(--fd);letter-spacing:.3em;text-align:center}
+#pause .mnav{font-size:22px;padding:8px 14px}
 </style>
 </head>
 <body>
@@ -472,6 +479,7 @@ body.title #menu{display:none!important}
     <canvas id="gGraph" width="580" height="192"></canvas>
     <div class="legend"><span style="color:#5fb7ff">■ VERTICAL</span><span style="color:#ffa64d">■ LATERAL</span><span style="color:#5fe39a">■ LONGIT.</span></div>
   </div>
+  <div class="box glass chamfer accent-top" id="hudMap"><canvas id="miniMap" width="400" height="400"></canvas></div>
   <div class="box glass chamfer" id="hudCtl">
     <button id="btnCam"></button>
     <button id="btnSlow"></button>
@@ -484,6 +492,7 @@ body.title #menu{display:none!important}
 <div id="title" class="hidden"><div class="tlogo"><svg viewBox="0 0 100 100"><defs><linearGradient id="lgT" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#ffd2b8"/><stop offset="1" stop-color="#ff5a2a"/></linearGradient></defs><path d="M6 82 C 26 82, 30 20, 50 20 C 70 20, 74 60, 62 64 C 50 68, 44 46, 58 40 C 72 34, 82 70, 96 82" fill="none" stroke="url(#lgT)" stroke-width="8" stroke-linecap="round"/><path d="M6 92 H96" stroke="#3fe0d0" stroke-width="4" stroke-linecap="round"/></svg><h1>SKYLINE</h1><div class="tsub">COASTER STUDIO</div></div><div class="press">PRESS ANY KEY</div></div>
 <div id="nodeWidget" class="glass off"></div>
 <div id="radial" class="hidden"></div>
+<div id="pause" class="hidden"><div class="pbox glass chamfer accent-top"><h2>PAUSED</h2><div id="pauseNav"></div></div></div>
 <div id="toasts"></div>
 <div id="fader"></div>
 <div id="fps" class="hidden"></div>
@@ -4745,7 +4754,7 @@ const Ride = {
     const jolt = (amp, out) => out.set(Math.sin(tt * 37) * Math.sin(tt * 13.3), Math.sin(tt * 41.7) * Math.cos(tt * 17.1), Math.sin(tt * 29.3) * Math.cos(tt * 7.9)).multiplyScalar(amp);
     if (mode === 'ride') {
       const eye = F.p.clone().addScaledVector(F.u, inv ? -0.95 : 1.6).addScaledVector(F.t, 0.55);
-      if (Gfx.shake() && !sim.done) {
+      if (Gfx.shake() && Settings.d.shake !== false && !sim.done) {
         const amp = Math.min(0.07, Math.abs(sim.v) * 0.0011) * (sim.design.style === 'wooden' ? 2.2 : 1) + this.shake * 0.12;
         jolt(amp, _b); eye.addScaledVector(F.side, _b.x).addScaledVector(F.u, _b.y);
       }
@@ -4820,7 +4829,7 @@ const Ride = {
     $('#hudSeg').textContent = segTxt; $('#hudSeg').style.color = sim.done ? (sim.result === 'complete' ? 'var(--good)' : 'var(--bad)') : PIECES[name].color;
     $('#hudTime').textContent = fmtTime(sim.t) + (this.speeds[this.si] !== 1 ? ' · ' + this.speeds[this.si] + '× speed' : '') + (this.silly ? ' · SILLY MODE' : '');
     this.gacc += dt;
-    if (this.gacc > 1 / 30) { this.gacc = 0; if (!sim.done) { this.graph.push([sim.vG, sim.lat, sim.lon]); if (this.graph.length > 300) this.graph.shift(); } this.drawGraph(); }
+    if (this.gacc > 1 / 30) { this.gacc = 0; this.drawMap(); if (!sim.done) { this.graph.push([sim.vG, sim.lat, sim.lon]); if (this.graph.length > 300) this.graph.shift(); } this.drawGraph(); }
   },
   // circular speedometer: auto-ranging scale, glowing arc, tick marks
   drawSpeedo(sv) {
@@ -4845,6 +4854,29 @@ const Ride = {
     }
     const a = a0 + (a1 - a0) * this.spDisp;
     x.beginPath(); x.arc(cx + Math.cos(a) * R, cy + Math.sin(a) * R, 9, 0, Math.PI * 2); x.fillStyle = '#fff'; x.shadowColor = '#fff'; x.shadowBlur = 16; x.fill(); x.shadowBlur = 0;
+  },
+  // live top-down map: the whole layout, the train as a glowing dot, station marked
+  drawMap() {
+    const c = $('#miniMap'); if (!c) return; const x = c.getContext('2d'), W = c.width, tr = this.sim.tr;
+    if (this._mapTr !== tr) {
+      this._mapTr = tr; const b = tr.bounds(), sz = Math.max(b.max.x - b.min.x, b.max.z - b.min.z, 20) * 1.12, cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+      this._map = { s: W / sz, cx, cz, minY: b.min.y, maxY: b.max.y };
+      const bg = document.createElement('canvas'); bg.width = bg.height = W; const g = bg.getContext('2d'), m = this._map;
+      const P = k => [W / 2 + (tr.px[k] - m.cx) * m.s, W / 2 + (tr.pz[k] - m.cz) * m.s];
+      g.lineCap = 'round'; g.lineJoin = 'round';
+      g.strokeStyle = 'rgba(0,0,0,.55)'; g.lineWidth = 9; g.beginPath(); for (let k = 0; k < tr.N; k += 2) { const [a, b2] = P(k); k ? g.lineTo(a, b2) : g.moveTo(a, b2); } if (tr.closed) g.closePath(); g.stroke();
+      for (let k = 0; k < tr.N - 2; k += 2) {   // colour by height
+        const h = (tr.py[k] - m.minY) / Math.max(1, m.maxY - m.minY), [a1, b1] = P(k), [a2, b3] = P(k + 2);
+        g.strokeStyle = `hsl(${180 - h * 160},85%,${55 + h * 10}%)`; g.lineWidth = 4.5; g.beginPath(); g.moveTo(a1, b1); g.lineTo(a2, b3); g.stroke();
+      }
+      if (tr.stationK >= 0) { const [a, b2] = P(tr.stationK); g.fillStyle = '#ff7a2f'; g.fillRect(a - 7, b2 - 7, 14, 14); }
+      this._mapBg = bg;
+    }
+    const m = this._map; x.clearRect(0, 0, W, W); x.drawImage(this._mapBg, 0, 0);
+    tr.frameAt(this.sim.s, this.Fc);
+    const px = W / 2 + (this.Fc.p.x - m.cx) * m.s, pz = W / 2 + (this.Fc.p.z - m.cz) * m.s, t = performance.now() / 1000;
+    x.fillStyle = 'rgba(255,255,255,.25)'; x.beginPath(); x.arc(px, pz, 14 + Math.sin(t * 6) * 4, 0, 7); x.fill();
+    x.fillStyle = '#fff'; x.shadowColor = '#3fe0d0'; x.shadowBlur = 16; x.beginPath(); x.arc(px, pz, 8, 0, 7); x.fill(); x.shadowBlur = 0;
   },
   drawGraph() {
     const c = $('#gGraph'), x = c.getContext('2d'), W = c.width, H = c.height, g = this.graph;
@@ -4966,7 +4998,7 @@ const App = {
     setTimeout(() => { $('#loading').classList.add('fade'); setTimeout(() => $('#loading').classList.add('hidden'), 700); }, 250);
   },
   setState(s) {
-    const prev = this.state; this.state = s; Sound.setScene(s);
+    const prev = this.state; this.state = s; Sound.setScene(s); $('#pause').classList.add('hidden');
     if (prev !== s) {
       // fade up from black and slide the interface in
       const f = $('#fader'); if (f && this._booted) f.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 520, easing: 'cubic-bezier(.16,1,.3,1)' });
@@ -5088,7 +5120,7 @@ const App = {
       ['Delete', 'Delete selected nodes'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['Ctrl+C / Ctrl+V', 'Copy / paste track section'], ['Ctrl+A', 'Select all nodes'], ['M', 'Mirror selection (or whole track)'],
       ['G', 'Toggle grid snapping'], ['H', 'Toggle G-force heatmap'], ['C', 'Focus camera on selection (editor) · cycle camera (ride)'], ['T', 'Test ride'], ['Ctrl+S', 'Save'],
       ['B', 'Piece builder (Planet Coaster style)'], ['← → / ↑ ↓ / Z X / [ ]', 'Builder: curve / slope / bank / length (Shift = fine)'], ['Enter · Backspace', 'Builder: build piece · pick up last piece'], ['V · R', 'Builder: auto-bank · reset piece'],
-      ['Esc', 'Stop ride / deselect / close dialog'], ['P', 'Photo mode (hide the interface)'], ['[ / ] (ride)', 'Slower / faster simulation'], ['U (ride)', 'Toggle mph / km/h']];
+      ['Esc', 'Stop ride / deselect / close dialog / pause menu'], ['P', 'Photo mode (hide the interface)'], ['[ / ] (ride)', 'Slower / faster simulation'], ['U (ride)', 'Toggle mph / km/h']];
     body.append(
       sec('Silly Mode', silly, el('div', { class: 'hint' }, 'No limits: any height, any size, launches up to 1,000,000 mph with the Accelerator, low gravity, vacuum tubes, super-loops and a rainbow train. Speed and G limits are removed and safety warnings become… less serious. Silly coasters are tagged and listed in their own community category.')),
       sec('Graphics', (() => {
@@ -5101,7 +5133,8 @@ const App = {
         el('div', { class: 'hint' }, 'Potato: no shadows, minimal effects · Low: sky reflections · Medium: shadows, ground detail, grass · High: soft shadows, full-detail track, more grass · Ultra: 4K shadows, dense grass, max resolution.'),
         uiCheck('Show FPS counter', S.showFps, v => { S.showFps = v; save(); $('#fps').classList.toggle('hidden', !v); })),
       sec('Controls', uiSlider('Camera sensitivity', 0.3, 2.5, 0.05, S.camSens, v => { S.camSens = v; save(); }, v => v.toFixed(2) + '×'),
-        uiCheck('Invert vertical orbit', S.invertOrbit, v => { S.invertOrbit = v; save(); })),
+        uiCheck('Invert vertical orbit', S.invertOrbit, v => { S.invertOrbit = v; save(); }),
+        uiCheck('Ride camera shake', S.shake !== false, v => { S.shake = v; save(); })),
       sec('Units', uiSelect('Unit system', [['imperial', 'Imperial (mph, ft)'], ['metric', 'Metric (km/h, m)']], S.units, v => { S.units = v; save(); if (Editor.design) { Editor.renderPanel(); Editor.updateBottomBar(); } })),
       sec('Sound', ...[['volume', 'Master', 0.6], ['musicVol', 'Music', 0.5], ['sfxVol', 'Effects', 0.9], ['ambVol', 'Ambience', 0.7], ['uiVol', 'Interface', 0.6]].map(([k, l, d]) =>
         uiSlider(l, 0, 1, 0.05, S[k] != null ? S[k] : d, v => { S[k] = v; save(); Sound.setVolume(); }, v => Math.round(v * 100) + '%')),
@@ -5147,6 +5180,8 @@ const App = {
       if ((tag === 'input' || tag === 'textarea' || tag === 'select') && e.key !== 'Escape') return;
       const k = e.key.toLowerCase();
       if (Modal.isOpen) { if (k === 'escape') Modal.close(); return; }
+      if (!$('#pause').classList.contains('hidden')) { if (k === 'escape') this.pause(false); return; }
+      if (k === 'escape' && this.state === 'editor' && !Builder.active && !Editor.sel.length && !Editor.drag) { this.pause(true); e.preventDefault(); return; }
       const builderKeys = this.state === 'editor' && Builder.active ? ['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'r'] : [];
       if (['w', 'a', 's', 'd', 'q', 'e', 'r', 'f', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'].includes(k) && !builderKeys.includes(k) && !e.ctrlKey && !e.metaKey) Cam.keys[k] = true;
       if (this.state === 'ride') {
@@ -5171,6 +5206,15 @@ const App = {
     const fps = a.n / a.t; this._at = null;
     if (fps < 28 && Gfx.lv() > 1) { Settings.d.gfx = Gfx.lv() - 1; Settings.save(); applyGraphics(); toast('Graphics set to ' + Gfx.name() + ' for smoother play (change it in Settings)'); this._tunes = (this._tunes || 0) + 1; if (this._tunes >= 2) { Settings.d.gfxTuned = true; Settings.save(); } }
     else { Settings.d.gfxTuned = true; Settings.save(); }
+  },
+  pause(on) {
+    const p = $('#pause');
+    if (on === undefined) on = p.classList.contains('hidden');
+    if (!on) { p.classList.add('hidden'); Sound.ui('close'); return; }
+    const nav = $('#pauseNav'); nav.innerHTML = '';
+    const item = (n, label, fn) => el('button', { class: 'mnav', style: `animation-delay:${n * 0.04}s`, onclick: () => { p.classList.add('hidden'); fn(); } }, el('span', { class: 'num' }, String(n).padStart(2, '0')), el('span', null, label));
+    nav.append(item(1, 'Resume', () => { }), item(2, 'Test Ride', () => Ride.start()), item(3, 'Save', () => this.saveDialog()), item(4, 'Settings', () => this.settingsDialog()), item(5, 'Main Menu', () => this.toMenu()));
+    p.classList.remove('hidden'); Sound.ui('open');
   },
   renderFrame() { Mirror.update(R.camera, performance.now()); Post.render(R.scene, R.camera); },
   loop(t) {
