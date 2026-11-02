@@ -3022,7 +3022,6 @@ const Thumbs = {
       if (this.scene.background && this.scene.background.dispose) this.scene.background.dispose();
       this.scene.background = new THREE.CanvasTexture(bc); this.scene.background.encoding = THREE.sRGBEncoding;
       this.scene.fog = new THREE.Fog(new THREE.Color(hor).convertLinearToSRGB(), 250, 1400);
-      this.scene.environment = R.scene.environment;
       this.hemi.intensity = night ? 0.2 : 0.5; this.sun.intensity = night ? 0.4 : 2.0;
       this.ground.material.color.set(night ? 0x1f3320 : 0x4f8a2e);
       const g = TrackRenderer.build(tr, design, () => 0); this.scene.add(g);
@@ -3182,7 +3181,7 @@ const Cam = {
   sens() { return Settings.d.camSens || 1; },
   fwd() { return new V3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)); },
   right() { return new V3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)); },
-  orbit(dx, dy) { this.goal = null; this.yaw -= dx * 0.005 * this.sens(); this.pitch = clamp(this.pitch + dy * 0.005 * this.sens() * (Settings.d.invertOrbit ? -1 : 1), 0.03, 1.53); },
+  orbit(dx, dy) { this.goal = null; this.pitchGoal = null; this.yaw -= dx * 0.005 * this.sens(); this.pitch = clamp(this.pitch + dy * 0.005 * this.sens() * (Settings.d.invertOrbit ? -1 : 1), 0.03, 1.53); },
   pan(dx, dy) { this.goal = null; const s = this.dist * 0.0016 * this.sens(); this.target.addScaledVector(this.right(), -dx * s).addScaledVector(this.fwd(), dy * s); this.clampTarget(); },
   zoom(f) { this.dist = clamp(this.dist * f, 3, 1600 * Env.viewScale); },
   clampTarget() { const L = 600 * Env.viewScale; this.target.x = clamp(this.target.x, -L, L); this.target.z = clamp(this.target.z, -L, L); this.target.y = clamp(this.target.y, -20, 900 * Env.viewScale); },
@@ -3195,8 +3194,9 @@ const Cam = {
     if (k.d || k.arrowright) { this.target.addScaledVector(this.right(), sp); this.goal = null; }
     if (k.q) this.yaw += 1.6 * dt * this.sens(); if (k.e) this.yaw -= 1.6 * dt * this.sens();
     if (k.r) this.zoom(1 - dt * 1.5); if (k.f && !k.ctrl) this.zoom(1 + dt * 1.5);
+    if (this.pitchGoal != null) { this.pitch = lerp(this.pitch, this.pitchGoal, 1 - Math.exp(-dt * 2.5)); if (Math.abs(this.pitch - this.pitchGoal) < 0.002) this.pitchGoal = null; }
     if (this.goal) {
-      const a = 1 - Math.exp(-dt * 6);
+      const a = 1 - Math.exp(-dt * (this.pitchGoal != null ? 2.5 : 6));
       this.target.lerp(this.goal.p, a); this.dist = lerp(this.dist, this.goal.d, a);
       if (this.target.distanceTo(this.goal.p) < 0.05) this.goal = null;
     }
@@ -3269,7 +3269,9 @@ const Editor = {
     $('#coasterName').value = d.name || '';
     if (this.track) {
       const b = this.track.bounds(), c = b.getCenter(new V3()), sz = b.getSize(new V3());
-      Cam.target.copy(c).setY(c.y * 0.4); Cam.dist = clamp(Math.max(sz.x, sz.z) * 0.95 + 40, 60, 700); Cam.goal = null;
+      const d = clamp(Math.max(sz.x, sz.z) * 0.95 + 40, 60, 700 * Env.viewScale);
+      Cam.target.copy(c).setY(c.y * 0.4); Cam.dist = d * 1.9; Cam.pitch = 0.75; Cam.goal = { p: Cam.target.clone(), d };   // cinematic fly-in
+      Cam.pitchGoal = 0.45;
     }
   },
   serialize(withTerrain = true) {
@@ -3921,7 +3923,7 @@ const Ride = {
   stop() {
     if (!this.active) return;
     this.active = false; Sound.silence(); Train.group.visible = false;
-    Train.cars.forEach(c => { const d = c.getObjectByName('detail'); if (d) d.visible = true; });
+    Train.cars.forEach(c => { const d = c.getObjectByName('detail'); if (d) d.visible = true; (c.userData.arms || []).forEach(a => a.visible = true); });
     Object.assign(Cam, { yaw: this.saved.yaw, pitch: this.saved.pitch, dist: this.saved.dist }); Cam.target.copy(this.saved.t); Cam.goal = null;
     R.camera.fov = 60; R.camera.updateProjectionMatrix();
     App.setState('editor');
@@ -3944,6 +3946,7 @@ const Ride = {
     let fov = 60;
     const det = Train.cars[0] && Train.cars[0].getObjectByName('detail');
     if (det) det.visible = mode !== 'ride';
+    if (Train.cars[0]) for (const a of Train.cars[0].userData.arms || []) a.visible = mode !== 'ride';
     if (mode === 'ride') {
       const eye = F.p.clone().addScaledVector(F.u, inv ? -0.95 : 1.6).addScaledVector(F.t, 0.55);
       if (Gfx.shake() && !sim.done) {
@@ -4264,7 +4267,7 @@ const App = {
       sec('Silly Mode', silly, el('div', { class: 'hint' }, 'No limits: any height, any size, launches up to 1,000,000 mph with the Accelerator, low gravity, vacuum tubes, super-loops and a rainbow train. Speed and G limits are removed and safety warnings become… less serious. Silly coasters are tagged and listed in their own community category.')),
       sec('Graphics', (() => {
         const row = uiSlider('Graphics', 1, 5, 1, Gfx.lv(), v => { S.gfx = v; }, v => Gfx.names[v - 1], v => {
-          S.gfx = v; save(); applyGraphics();
+          S.gfx = v; S.gfxTuned = true; save(); applyGraphics();
           toast('Graphics: ' + Gfx.name() + (Gfx.antialias() !== R.aa ? ' · reload the page to switch anti-aliasing ' + (Gfx.antialias() ? 'on' : 'off') : ''));
         });
         return row;
@@ -4329,6 +4332,17 @@ const App = {
     window.addEventListener('keyup', e => { Cam.keys[e.key.toLowerCase()] = false; if (e.key === 'Shift') Cam.keys.shift = false; });
     window.addEventListener('blur', () => { Cam.keys = {}; });
   },
+  // first launch only: if the default graphics level runs below ~28 fps, step it down once or twice
+  autoTune(dt) {
+    if (Settings.d.gfxTuned || navigator.webdriver) return;
+    const a = this._at || (this._at = { t: 0, n: 0, warm: 0 });
+    a.warm += dt; if (a.warm < 3) return;
+    a.t += dt; a.n++;
+    if (a.t < 4) return;
+    const fps = a.n / a.t; this._at = null;
+    if (fps < 28 && Gfx.lv() > 1) { Settings.d.gfx = Gfx.lv() - 1; Settings.save(); applyGraphics(); toast('Graphics set to ' + Gfx.name() + ' for smoother play (change it in Settings)'); this._tunes = (this._tunes || 0) + 1; if (this._tunes >= 2) { Settings.d.gfxTuned = true; Settings.save(); } }
+    else { Settings.d.gfxTuned = true; Settings.save(); }
+  },
   renderFrame() { Mirror.update(R.camera, performance.now()); Post.render(R.scene, R.camera); },
   loop(t) {
     requestAnimationFrame(tt => this.loop(tt));
@@ -4344,6 +4358,7 @@ const App = {
     Terrain.tick(dt, t); Wind.u.value = t / 1000; TrackFX.update(dt, t); Birds.update(t / 1000);
     this.renderFrame();
     this.frames++; this.fpsT += dt;
+    this.autoTune(dt);
     if (this.fpsT > 0.5) { if (Settings.d.showFps) $('#fps').textContent = Math.round(this.frames / this.fpsT) + ' fps · ' + R.renderer.info.render.calls + ' draws'; this.frames = 0; this.fpsT = 0; }
   }
 };
