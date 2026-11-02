@@ -832,7 +832,8 @@ const Env = {
 // shared emissive materials that brighten at night
 const Lights = {
   mats: [],
-  make(color) { const m = new THREE.MeshBasicMaterial({ color }); m.userData.shared = true; m.userData.base = new THREE.Color(color); this.mats.push(m); this.apply(m); return m; },
+  cache: {},
+  make(color) { if (this.cache[color]) return this.cache[color]; const m = new THREE.MeshBasicMaterial({ color }); m.userData.shared = true; m.userData.base = new THREE.Color(color); this.mats.push(m); this.apply(m); return (this.cache[color] = m); },
   setNight(n) { this.n = n; this.mats.forEach(m => this.apply(m)); if (this.pointMat) { this.pointMat.opacity = n; } },
   apply(m) { const n = this.n || 0; m.color.copy(m.userData.base).multiplyScalar(0.55 + 0.6 * n); }
 };
@@ -1114,6 +1115,21 @@ class Track {
       sx[k] = Sv.x * c - Uv.x * sn; sy[k] = Sv.y * c - Uv.y * sn; sz[k] = Sv.z * c - Uv.z * sn;
     }
     Object.assign(this, { ux, uy, uz, sx, sy, sz, roll });
+    // ---- rider heartline: G-forces are felt at the riders, not at the rail ----
+    const hl = design.style === 'inverted' ? -1.25 : 1.1;
+    const hx = F(N), hy = F(N), hz = F(N);
+    for (let k = 0; k < N; k++) { hx[k] = px[k] + ux[k] * hl; hy[k] = py[k] + uy[k] * hl; hz[k] = pz[k] + uz[k] * hl; }
+    const d1x = F(N), d1y = F(N), d1z = F(N), d2x = F(N), d2y = F(N), d2z = F(N);
+    for (let k = 0; k < N; k++) {
+      let a = I(k - 1), b = I(k + 1);
+      if (!closed && k === 0) { a = 0; b = 2; } else if (!closed && k === N - 1) { a = N - 3; b = N - 1; }
+      const m = (!closed && (k === 0 || k === N - 1)) ? (k === 0 ? 1 : N - 2) : k;
+      d1x[k] = (hx[b] - hx[a]) / (2 * ds); d1y[k] = (hy[b] - hy[a]) / (2 * ds); d1z[k] = (hz[b] - hz[a]) / (2 * ds);
+      d2x[k] = (hx[b] - 2 * hx[m] + hx[a]) / (ds * ds); d2y[k] = (hy[b] - 2 * hy[m] + hy[a]) / (ds * ds); d2z[k] = (hz[b] - 2 * hz[m] + hz[a]) / (ds * ds);
+    }
+    this.kx = boxBlur(boxBlur(d2x, 3), 3); this.ky = boxBlur(boxBlur(d2y, 3), 3); this.kz = boxBlur(boxBlur(d2z, 3), 3);
+    this.dx = boxBlur(d1x, 2); this.dy = boxBlur(d1y, 2); this.dz = boxBlur(d1z, 2);
+    this.railK = [kxs, kys, kzs];
     // ---- geometric stats ----
     let inv = 0, inverted = uy[0] < -0.15, maxH = -Infinity, minH = Infinity;
     for (let k = 0; k < N; k++) {
@@ -1148,6 +1164,7 @@ class Track {
     F.u.addScaledVector(F.t, -F.u.dot(F.t)).normalize();
     F.side.crossVectors(F.u, F.t);
     F.k.set(this.kx[i] * g + this.kx[j] * f, this.ky[i] * g + this.ky[j] * f, this.kz[i] * g + this.kz[j] * f);
+    F.d.set(this.dx[i] * g + this.dx[j] * f, this.dy[i] * g + this.dy[j] * f, this.dz[i] * g + this.dz[j] * f);
     const ki = f < 0.5 ? i : j;
     F.code = this.code[ki]; F.pv = this.pv[ki]; F.pt = this.pt[ki]; F.seg = this.sg[ki]; F.idx = ki;
     return F;
@@ -1175,7 +1192,7 @@ class Track {
     return b;
   }
 }
-function makeFrame() { return { p: new V3(), t: new V3(), u: new V3(), side: new V3(), k: new V3(), code: 0, pv: 0, pt: 1, seg: 0, idx: 0 }; }
+function makeFrame() { return { p: new V3(), t: new V3(), u: new V3(), side: new V3(), k: new V3(), d: new V3(), code: 0, pv: 0, pt: 1, seg: 0, idx: 0 }; }
 
 /* =====================================================================
    PATH BUILDER — element templates. Everything it makes is plain spline
@@ -1189,6 +1206,11 @@ class PathBuilder {
     if (this.nodes.length && o.type) this.nodes[this.nodes.length - 1].type = o.type;
     const nd = newNode(+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2), { roll: +(o.roll || 0).toFixed(1), auto: !!o.auto, smooth: o.smooth != null ? o.smooth : 1 });
     if (o.speed != null) nd.speed = o.speed;
+    if (this.E != null && this.nodes.length) {   // running energy estimate (v^2) for speed-aware element sizing
+      const dist = p.distanceTo(this.p), g = this.g || G0;
+      this.E -= 2 * g * (p.y - this.p.y) + 2 * (this.mu * g * 1.4 + this.drag * Math.max(0, this.E)) * dist;
+      this.E = Math.max(this.E, 4);
+    }
     this.nodes.push(nd); this.p.copy(p); return nd;
   }
   setPiece(type, extra) { const nd = this.nodes[this.nodes.length - 1]; if (nd) { nd.type = type; Object.assign(nd, extra || {}); } return this; }
@@ -1207,7 +1229,7 @@ class PathBuilder {
   helix(turns, R, dy, dir, o = {}) { return this.turn(360 * turns * dir, R, dy, Object.assign({ auto: true }, o)); }
   hill(len, height, o = {}) {
     const K = o.k || 6, b = this.p.clone(), f = this.f;
-    for (let k = 1; k <= K; k++) { const t = k / K; this.node(b.clone().addScaledVector(f, len * t).add(new V3(0, height * Math.sin(Math.PI * t) + (o.dy || 0) * t, 0)), o); }
+    for (let k = 1; k <= K; k++) { const t = k / K; this.node(b.clone().addScaledVector(f, len * t).add(new V3(0, height * (1 - Math.cos(2 * Math.PI * t)) / 2 + (o.dy || 0) * t, 0)), o); }
     return this;
   }
   drop(len, dy, o = {}) {
@@ -1464,7 +1486,7 @@ const TrackRenderer = {
     const addFoot = (x, gy, z, r) => pushI(foot, m.compose(_p.set(x, gy + 0.15, z), _q.identity(), _s.set(r * 1.8, 0.6, r * 1.8)));
     for (let k = 0; k < tr.N; k += stepK) {
       if (isStation(k) || near(k)) continue;
-      P.set(tr.px[k], tr.py[k], tr.pz[k]); U.set(tr.ux[k], tr.uy[k], tr.uz[k]); Sd.set(tr.sx[k], tr.sy[k], tr.sz[k]); K.set(tr.kx[k], tr.ky[k], tr.kz[k]);
+      P.set(tr.px[k], tr.py[k], tr.pz[k]); U.set(tr.ux[k], tr.uy[k], tr.uz[k]); Sd.set(tr.sx[k], tr.sy[k], tr.sz[k]); K.set(tr.railK[0][k], tr.railK[1][k], tr.railK[2][k]);
       const gy = ground(P.x, P.z);
       if (P.y - gy < 1.3) continue;
       const spineOff = style === 'inverted' ? 1.05 : -0.68;     // spine attach point along U
@@ -1673,13 +1695,13 @@ class Sim {
           if (d < 0.25 || d > tr.L * 0.5) { vn = 0; this.done = true; break; }
           const tgt = Math.min(tv, Math.sqrt(2 * 1.5 * d) + 0.15);
           if (vn > tgt) vn = Math.max(tgt, vn - 6 * h); else vn = Math.max(vn, Math.min(tgt, v + 1.8 * h));
-        } else if (vn > tv) vn = Math.max(tv, vn - 6 * h); else vn = Math.max(vn, Math.min(tv, v + 1.8 * h));
+        } else if (vn > tv) vn = Math.max(tv, vn - (6 + Math.max(0, vn - 30)) * h); else vn = Math.max(vn, Math.min(tv, v + 1.8 * h));
         break;
-      case 3: if (vn > tv) vn = Math.max(tv, vn - 5.5 * h); else if (vn < 1.2) vn = Math.max(vn, Math.min(1.5, v + 1.2 * h)); break;
+      case 3: if (vn > tv) vn = Math.max(tv, vn - (5.5 + Math.max(0, vn - 30)) * h); else if (vn < 1.2) vn = Math.max(vn, Math.min(1.5, v + 1.2 * h)); break;   // eddy brakes bite harder at high speed
       case 4: {
         const b = this.blk;
         if (F.seg !== b.seg) { b.seg = F.seg; b.phase = 0; b.timer = 0; }
-        if (b.phase === 0) { vn = Math.max(0, Math.min(vn, v - 6.5 * h)); if (vn <= 0.05) { vn = 0; b.phase = 1; } }
+        if (b.phase === 0) { vn = Math.max(0, Math.min(vn, v - (6.5 + Math.max(0, v - 30)) * h)); if (vn <= 0.05) { vn = 0; b.phase = 1; } }
         else if (b.phase === 1) { vn = 0; b.timer += h; if (b.timer > 1.2) b.phase = 2; }
         else { if (vn > tv) vn = Math.max(tv, vn - 4 * h); else vn = Math.max(vn, Math.min(tv, v + 1.6 * h)); }
         break;
@@ -1701,7 +1723,7 @@ class Sim {
     } else this.s = tr.wrap(this.s);
     // felt forces = acceleration - gravity, projected into the rider frame
     const w2 = vn * vn;
-    const ax = w2 * F.k.x + at * F.t.x, ay = w2 * F.k.y + at * F.t.y + g, az = w2 * F.k.z + at * F.t.z;
+    const ax = w2 * F.k.x + at * F.d.x, ay = w2 * F.k.y + at * F.d.y + g, az = w2 * F.k.z + at * F.d.z;
     const vG = (ax * F.u.x + ay * F.u.y + az * F.u.z) / G0, lat = (ax * F.side.x + ay * F.side.y + az * F.side.z) / G0, lon = (ax * F.t.x + ay * F.t.y + az * F.t.z) / G0;
     this.vG = vG; this.lat = lat; this.lon = lon; this.code = c;
     this.record(h, vn, vG, lat, lon, F);
@@ -1825,6 +1847,384 @@ const Challenges = {
   evaluate(ch, st, rt) { return ch.goals.map(([label, fn]) => ({ label, ok: !!(st && fn(st, rt || {})) })); },
   markDone(id) { const d = this.done(); if (!d[id]) { d[id] = Date.now(); Store.set('sky.challenges', d); return true; } return false; }
 };
+
+
+/* =====================================================================
+   SPEED-AWARE ELEMENT SIZING (used by the element wizard and the samples)
+   ===================================================================== */
+Object.assign(PathBuilder.prototype, {
+  g: G0, mu: STYLES.steel.mu, drag: STYLES.steel.drag, E: 6.25,
+  setStyle(style) { const st = STYLES[style] || STYLES.steel; this.mu = st.mu; this.drag = st.drag; return this; },
+  vEst(y = this.p.y) { return Math.sqrt(Math.max(9, this.E - 2 * this.g * (y - this.p.y))); },
+  topY() { return this.p.y + this.E / (2 * this.g); },
+  setSpeed(v) { this.E = v * v; return this; },
+  launchTrack(len, speed, time, type = 'launch') {
+    this.setPiece(type, { speed, time }); this.straight(len); this.E = speed * speed; return this;
+  },
+  liftHill(height, angle = 40, speed) { this.lift(height, angle, { speed }); this.E = Math.pow(speed || 4, 2); return this; },
+  // crest pushover -> straight dive -> pull-out radius chosen for a target G
+  dropTo(yTarget, angle = 55, pullG = 3.3) {
+    const g = this.g, dy = this.p.y - yTarget; if (dy < 2) return this;
+    let a = angle * Math.PI / 180;
+    const v0 = this.vEst(), vb2 = Math.max(9, this.E + 2 * g * dy * 0.95);
+    const Rp = Math.max(9, v0 * v0 / (g * 0.75)), Rb = Math.max(8, vb2 / (g * (pullG - 1)));
+    let straight = dy - (Rp + Rb) * (1 - Math.cos(a));
+    while (straight < 0 && a > 0.2) { a *= 0.9; straight = dy - (Rp + Rb) * (1 - Math.cos(a)); }
+    straight = Math.max(0, straight);
+    const f = this.f, b = this.p.clone();
+    let x = 0, y = 0;
+    const pts = [];
+    for (const t of [0.5, 1]) pts.push([Rp * Math.sin(a * t), -Rp * (1 - Math.cos(a * t))]);
+    x = pts[1][0]; y = pts[1][1];
+    x += straight / Math.tan(a); y -= straight; pts.push([x, y]);
+    for (const t of [1 / 3, 2 / 3, 1]) { const th = a * (1 - t); pts.push([x + Rb * (Math.sin(a) - Math.sin(th)), y - Rb * (Math.cos(th) - Math.cos(a))]); }
+    for (const [px, py] of pts) this.node(b.clone().addScaledVector(f, px).add(new V3(0, py, 0)));
+    return this;
+  },
+  airHill(H, crestG = -0.1) {
+    const vc2 = Math.max(16, this.E - 2 * this.g * H);
+    const R = vc2 / (this.g * (1 - crestG));
+    const L = clamp(Math.PI * Math.sqrt(2 * R * H), 24, 320);
+    return this.hill(L, H, { k: 8 });
+  },
+  autoLoop(dir = 1, scale = 1) {
+    const v = this.vEst(); const size = clamp(v * v / (this.g * 5.2) * scale, 6, 220);
+    return this.loop(size, 4 * dir, dir);
+  },
+  autoTurn(deg, latG = 1.5, dy = 0) {
+    const v = this.vEst(this.p.y + dy / 2), R = clamp(v * v / (this.g * latG), 9, 400);
+    return this.turn(deg, R, dy, { auto: true });
+  },
+  autoHelix(turns, dir, dy = 0) {
+    const v = this.vEst(this.p.y + dy / 2), R = clamp(v * v / (this.g * 1.9), 10, 300);
+    return this.turn(360 * turns * dir, R, dy, { auto: true, step: 36 });
+  },
+  corkscrew(dir = 1) { const v = this.vEst(); return this.roll(Math.max(22, v * 1.45), 4.2, dir, 0, { k: 8 }); },
+  zeroG(dir = 1) { const v = this.vEst(); return this.roll(Math.max(24, v * 1.7), 1.3, dir, 5, { k: 8 }); },
+  // bring an out-and-back layout home: brake run, line up, 180° turn into the station
+  home(st, brakeLen = 26) {
+    // coast back alongside the station, U-turn behind it, then brake into the platform
+    const target = new V3(st.x - brakeLen, st.y, st.z);
+    const d = target.clone().sub(this.p).dot(this.f);
+    if (d > 1) {
+      const n = Math.ceil(d / 60);
+      for (let i = 0; i < n; i++) {
+        if (this.vEst() < 9) this.setPiece('lift', { speed: 8 });   // booster tyres keep a slow train moving home
+        this.straight(d / n, { dy: (st.y + 1 - this.p.y) / (n - i) * 0.8 });
+      }
+    }
+    const side = Math.sign(target.clone().sub(this.p).dot(this.n)) || 1;
+    this.uturnTo(target, side, st.y - this.p.y);
+    const last = this.nodes[this.nodes.length - 1]; last.auto = false; last.roll = 0;
+    this.setPiece('brake', { speed: 4 });
+    return this;
+  }
+});
+
+/* =====================================================================
+   DESIGN HELPERS
+   ===================================================================== */
+const Design = {
+  base(style = 'steel') {
+    return {
+      format: 'skyline-coaster', version: 1, id: uid(), name: 'Untitled Coaster', style, closed: true, cars: 5,
+      colors: style === 'wooden' ? { track: '#8a6038', support: '#b48a5a', train: '#c8352f' } : style === 'inverted' ? { track: '#3e7bd6', support: '#2b2f3a', train: '#ffcc33' } : { track: '#e8452c', support: '#d8dde6', train: '#2d7ff9' },
+      nodes: [], scenery: [], env: { time: 13, weather: 'sunny', cycle: false }, physics: { lowGravity: false }, rainbow: false, terrain: { gen: 7 }
+    };
+  },
+  stationOnly(style) {
+    const d = this.base(style);
+    d.nodes = [newNode(-60, 2.5, -30, { type: 'station' }), newNode(-34, 2.5, -30)]; d.closed = false;
+    return d;
+  },
+  starter(style = 'steel') {
+    const d = this.base(style); d.name = 'My First Coaster';
+    const st = { x: -88, y: 2.5, z: -30 };
+    const b = new PathBuilder(st.x, st.y, st.z, 0).setStyle(style);
+    b.start().setPiece('station').straight(26).liftHill(30, 38).dropTo(4, 52, 3.2).airHill(13).airHill(7)
+      .autoTurn(180, 1.4).airHill(8).straight(6).home(st);
+    if (style === 'wooden') d.cars = 4;
+    d.nodes = b.nodes; return d;
+  },
+  isSilly(d) { return !!(d.sillyBuilt || (d.physics && d.physics.lowGravity) || d.rainbow || d.nodes.some(n => n.type === 'accel')); },
+  clone(d) { return JSON.parse(JSON.stringify(d)); },
+  validate(d) {
+    if (!d || typeof d !== 'object' || !Array.isArray(d.nodes)) throw new Error('Not a Skyline coaster file');
+    const b = this.base(d.style in STYLES ? d.style : 'steel');
+    const out = Object.assign(b, d);
+    out.nodes = d.nodes.filter(n => n && isFinite(n.x) && isFinite(n.y) && isFinite(n.z)).slice(0, 2000).map(n => Object.assign(newNode(+n.x, +n.y, +n.z), {
+      roll: clamp(+n.roll || 0, -180, 180), auto: !!n.auto, smooth: clamp(n.smooth != null ? +n.smooth : 1, 0, 2), type: PIECES[n.type] ? n.type : 'track'
+    }, n.speed != null ? { speed: clamp(+n.speed, 0, 268.3) } : {}, n.time != null ? { time: clamp(+n.time, 0.1, 10) } : {}));
+    out.scenery = Array.isArray(d.scenery) ? d.scenery.filter(s => s && Scenery.TYPES[s.type] && isFinite(s.x) && isFinite(s.z)).slice(0, 5000) : [];
+    out.cars = clamp(d.cars | 0 || 5, 1, 8); out.colors = Object.assign(b.colors, d.colors || {});
+    out.physics = Object.assign({ lowGravity: false }, d.physics || {}); out.env = Object.assign({ time: 13, weather: 'sunny', cycle: false }, d.env || {});
+    out.id = d.id || uid(); out.name = String(d.name || 'Imported Coaster').slice(0, 40);
+    return out;
+  },
+  analyze(d, silly) {
+    const tr = new Track(d); if (!tr.ok) return null;
+    const st = Sim.headless(tr, d, silly != null ? silly : Design.isSilly(d) || Settings.d.silly);
+    return { track: tr, stats: st, ratings: Ratings.rate(st, silly != null ? silly : Design.isSilly(d) || Settings.d.silly) };
+  }
+};
+
+/* =====================================================================
+   SAMPLE COASTERS (fake players, so the community board feels alive)
+   ===================================================================== */
+const Samples = {
+  list() {
+    const S = [];
+    const mk = (meta, style, fn, extra) => {
+      const d = Design.base(style); Object.assign(d, extra || {}); const st = { x: -96, y: 2.5, z: -40 };
+      const b = new PathBuilder(st.x, st.y, st.z, 0).setStyle(style); if (d.physics.lowGravity) b.g = G0 * 0.3;
+      b.start().setPiece('station').straight(28);
+      fn(b, st); d.nodes = b.nodes; d.name = meta.name; S.push({ meta, design: d });
+    };
+    mk({ name: 'Thunder Valley', author: 'coasterkid_92', desc: 'A classic out-and-back hyper. Big drop, bigger airtime. Keep your hands up!', ago: 9 }, 'steel',
+      (b, st) => b.liftHill(56, 42).dropTo(4, 62, 3.5).airHill(30, -0.15).airHill(20, -0.2).autoTurn(180, 1.5, 6).airHill(14, -0.2).airHill(8).home(st));
+    mk({ name: 'Old Timber', author: 'WoodieWendy', desc: 'Rickety, rattly and full of floater airtime. Built with love (and splinters).', ago: 30 }, 'wooden',
+      (b, st) => b.liftHill(30, 35).dropTo(3.5, 48, 3).airHill(11, 0).autoTurn(90, 1.3).airHill(7, 0).autoTurn(90, 1.3).airHill(9, 0).airHill(6, 0).home(st), { cars: 4 });
+    mk({ name: 'Looping Lagoon', author: 'LoopLord', desc: 'Two loops, a corkscrew and a zero-g roll over the lake. Four inversions of pure joy.', ago: 50 }, 'steel',
+      (b, st) => b.liftHill(38, 40).dropTo(4, 55, 3.2).straight(6).autoLoop(1).straight(10).corkscrew(1).straight(8).autoTurn(180, 1.4, 2).straight(6).autoLoop(-1).straight(8).zeroG(-1).straight(6).home(st),
+      { colors: { track: '#21c4b8', support: '#f3f3f3', train: '#ff6b3d' } });
+    mk({ name: 'Night Viper', author: 'venom_rides', desc: 'An inverted beast that only comes out at night. Feet dangling, lights blazing.', ago: 75 }, 'inverted',
+      (b, st) => b.liftHill(40, 40).dropTo(4.5, 58, 3.3).straight(6).autoLoop(1).straight(8).zeroG(1).straight(6).autoHelix(1, 1, 0).straight(4).corkscrew(-1).straight(6).home(st),
+      { env: { time: 22.5, weather: 'night', cycle: false }, colors: { track: '#5ef04f', support: '#22262e', train: '#7a2cff' } });
+    mk({ name: 'Family Breeze', author: 'GrandmaGs', desc: 'Gentle hills and a little helix. My grandkids rode it 14 times in a row.', ago: 120 }, 'steel',
+      (b, st) => b.liftHill(13, 30, 3).dropTo(3, 35, 2.2).airHill(3, 0.4).autoTurn(180, 1.0).autoHelix(1, 1, 0).airHill(2.5, 0.4).home(st, 18),
+      { cars: 4, colors: { track: '#ffb3d1', support: '#ffffff', train: '#7ec8ff' } });
+    mk({ name: 'Rocket Reef', author: 'launchpad_luke', desc: 'LSM launch to 85 mph straight into a giant hill and a loop. 3... 2... 1...', ago: 160 }, 'steel',
+      (b, st) => b.straight(6).launchTrack(70, 38, 3).straight(4).airHill(40, -0.1).autoLoop(1).straight(8).autoTurn(180, 1.5).corkscrew(1).straight(6).airHill(8).home(st),
+      { colors: { track: '#ffd23f', support: '#1f6fd1', train: '#f03c3c' } });
+    mk({ name: 'HYPERDRIVE 9000', author: 'xX_GForce_Xx', desc: '0 to 500 mph in 0.3 seconds. Doctors hate it. Riders were last seen near Jupiter.', ago: 20 }, 'steel',
+      (b, st) => { b.straight(6).launchTrack(90, 223.5, 0.3, 'accel'); b.loop(105, 6, 1, { k: 18 }); b.straight(30).autoTurn(180, 40); b.straight(30); b.home(st, 230); },
+      { sillyBuilt: true, colors: { track: '#ff4fd8', support: '#2a2a2a', train: '#00e5ff' } });
+    mk({ name: 'Moonbounce', author: 'space_cadet', desc: 'Low gravity, rainbow train, endless floaty airtime. Like riding a cloud on the moon.', ago: 60 }, 'steel',
+      (b, st) => b.liftHill(40, 42, 3).dropTo(4, 55, 2.4).airHill(26, -0.4).airHill(20, -0.4).autoTurn(180, 1.2).airHill(18, -0.4).zeroG(1).airHill(9, -0.3).home(st),
+      { physics: { lowGravity: true }, rainbow: true, sillyBuilt: true, env: { time: 18.4, weather: 'sunset', cycle: false }, colors: { track: '#ffffff', support: '#9b7bff', train: '#ff4fd8' } });
+    return S;
+  },
+  comments: [
+    ['coasterkid_92', 'That second hill is pure ejector air. 10/10'], ['WoodieWendy', 'Love the pacing on this one!'], ['ride_nerd', 'Smooth transitions, great flow.'],
+    ['LoopLord', 'Needs more loops. Always needs more loops.'], ['GrandmaGs', 'A bit too wild for me but my grandson loved it'], ['venom_rides', 'The night lighting on this is gorgeous'],
+    ['qwerty_coasters', 'How did you get the banking so clean?'], ['space_cadet', 'Rode it 30 times. No regrets.'], ['launchpad_luke', 'That launch though!!'], ['xX_GForce_Xx', 'add an accelerator next time ;)']
+  ]
+};
+
+/* =====================================================================
+   COMMUNITY
+   Backend interface (all async so a real server can be dropped in):
+     list({category:'normal'|'silly', sort:'top'|'new'|'intense'|'fast', q}) -> Entry[]
+     get(id) -> Entry | publish(entry) -> Entry | rate(id,user,stars) | comment(id,user,text) | remove(id,user)
+   Entry: {id,name,author,description,screenshot,design,stats,ratings,silly,created,votes:{user:stars},comments:[{author,text,t}]}
+   ===================================================================== */
+class LocalCommunityBackend {
+  constructor(key) { this.key = key; }
+  _load() { return Store.get(this.key, { entries: [] }); }
+  _save(db) {
+    if (Store.set(this.key, db)) return true;
+    // storage full: drop the oldest screenshots of other people's entries and retry
+    db.entries.filter(e => e.sample).forEach(e => e.screenshot = null);
+    return Store.set(this.key, db);
+  }
+  static avg(e) { const v = Object.values(e.votes || {}); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; }
+  async list({ category = 'normal', sort = 'top', q = '' } = {}) {
+    let list = this._load().entries.filter(e => (category === 'silly') === !!e.silly);
+    if (q) { const s = q.toLowerCase(); list = list.filter(e => (e.name + ' ' + e.author + ' ' + e.description).toLowerCase().includes(s)); }
+    const A = LocalCommunityBackend.avg;
+    const score = e => { const n = Object.keys(e.votes || {}).length; return (A(e) * n + 3 * 2) / (n + 2); };   // bayesian average
+    const sorters = { top: (a, b) => score(b) - score(a), new: (a, b) => b.created - a.created, intense: (a, b) => b.ratings.intensity - a.ratings.intensity || b.stats.maxVG - a.stats.maxVG, fast: (a, b) => b.stats.maxSpeed - a.stats.maxSpeed };
+    return list.sort(sorters[sort] || sorters.top);
+  }
+  async get(id) { return this._load().entries.find(e => e.id === id) || null; }
+  async publish(entry) {
+    const db = this._load(); entry.id = entry.id || uid(); entry.created = Date.now(); entry.votes = entry.votes || {}; entry.comments = entry.comments || [];
+    db.entries = db.entries.filter(e => e.id !== entry.id); db.entries.push(entry);
+    if (!this._save(db)) throw new Error('Storage full'); return entry;
+  }
+  async update(id, fn) { const db = this._load(), e = db.entries.find(x => x.id === id); if (!e) return null; fn(e); this._save(db); return e; }
+  async rate(id, user, stars) { return this.update(id, e => { e.votes = e.votes || {}; e.votes[user] = clamp(stars | 0, 1, 5); }); }
+  async comment(id, user, text) { return this.update(id, e => e.comments.push({ author: user, text: String(text).slice(0, 400), t: Date.now() })); }
+  async remove(id, user) { const db = this._load(); db.entries = db.entries.filter(e => !(e.id === id && e.author === user)); this._save(db); }
+  async setScreenshot(id, url) { return this.update(id, e => e.screenshot = url); }
+}
+// Example of how a real server would plug in (not used: there is no backend).
+class RemoteCommunityBackend {
+  constructor(base) { this.base = base; }
+  async _j(path, opt) { const r = await fetch(this.base + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opt)); if (!r.ok) throw new Error(r.status); return r.json(); }
+  list(q) { return this._j('/coasters?' + new URLSearchParams(q)); }
+  get(id) { return this._j('/coasters/' + id); }
+  publish(e) { return this._j('/coasters', { method: 'POST', body: JSON.stringify(e) }); }
+  rate(id, user, stars) { return this._j(`/coasters/${id}/rating`, { method: 'PUT', body: JSON.stringify({ user, stars }) }); }
+  comment(id, user, text) { return this._j(`/coasters/${id}/comments`, { method: 'POST', body: JSON.stringify({ user, text }) }); }
+  remove(id) { return this._j('/coasters/' + id, { method: 'DELETE' }); }
+  setScreenshot(id, url) { return this._j(`/coasters/${id}/screenshot`, { method: 'PUT', body: JSON.stringify({ url }) }); }
+}
+
+// small off-screen renderer for coaster thumbnails
+const Thumbs = {
+  r: null,
+  render(design, tr) {
+    try {
+      if (!this.r) {
+        this.r = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+        this.r.setSize(384, 216); this.r.setPixelRatio(1);
+        this.scene = new THREE.Scene(); this.cam = new THREE.PerspectiveCamera(50, 384 / 216, 1, 4000);
+        this.hemi = new THREE.HemisphereLight(0xcfe6ff, 0x4d6a3a, 0.7); this.sun = new THREE.DirectionalLight(0xffffff, 0.8); this.sun.position.set(1, 2, 0.6);
+        this.ground = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000).rotateX(-Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0x5f9a3e }));
+        this.scene.add(this.hemi, this.sun, this.ground);
+      }
+      tr = tr || new Track(design); if (!tr.ok) return null;
+      const w = design.env && design.env.weather, night = w === 'night', sunset = w === 'sunset';
+      this.scene.background = new THREE.Color(night ? 0x0a1430 : sunset ? 0xf59a63 : 0x9fd0f2);
+      this.scene.fog = new THREE.Fog(this.scene.background, 300, 1600);
+      this.hemi.intensity = night ? 0.3 : 0.7; this.sun.intensity = night ? 0.25 : 0.8;
+      this.ground.material.color.set(night ? 0x1f3320 : 0x5f9a3e);
+      const g = TrackRenderer.build(tr, design, () => 0); this.scene.add(g);
+      const prev = Lights.pointMat.opacity; Lights.pointMat.opacity = night ? 1 : 0;
+      const b = tr.bounds(), c = b.getCenter(new V3()), sz = b.getSize(new V3()), r = Math.max(sz.x, sz.z, sz.y * 1.6) * 0.62 + 10;
+      this.cam.position.set(c.x + r * 0.75, c.y + r * 0.5 + 8, c.z + r * 0.95); this.cam.lookAt(c.x, c.y * 0.6, c.z);
+      this.r.render(this.scene, this.cam);
+      const url = this.r.domElement.toDataURL('image/jpeg', 0.78);
+      Lights.pointMat.opacity = prev;
+      this.scene.remove(g); disposeObj(g);
+      return url;
+    } catch (e) { console.warn('thumb', e); return null; }
+  }
+};
+function captureScreenshot(w = 384, h = 216) {
+  try {
+    App.renderFrame();
+    const src = R.renderer.domElement, c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d'), ar = src.width / src.height, tar = w / h;
+    let sw = src.width, sh = src.height, sx = 0, sy = 0;
+    if (ar > tar) { sw = sh * tar; sx = (src.width - sw) / 2; } else { sh = sw / tar; sy = (src.height - sh) / 2; }
+    ctx.drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
+    return c.toDataURL('image/jpeg', 0.78);
+  } catch (e) { return null; }
+}
+
+const Community = {
+  backend: new LocalCommunityBackend('sky.community.v1'),
+  view: { category: 'normal', sort: 'top', q: '' },
+  seedVersion: 3,
+  async seed() {
+    if (Store.get('sky.community.seeded', 0) === this.seedVersion) return;
+    const rnd = mulberry32(77), db = { entries: (Store.get('sky.community.v1', { entries: [] }).entries || []).filter(e => !e.sample) };
+    for (const { meta, design } of Samples.list()) {
+      const silly = Design.isSilly(design), a = Design.analyze(design, silly); if (!a) continue;
+      const votes = {}, nv = 4 + Math.floor(rnd() * 20);
+      const base = clamp(a.ratings.stars, 2.5, 5);
+      for (let i = 0; i < nv; i++) votes['fan' + i] = clamp(Math.round(base + (rnd() - 0.4) * 2), 1, 5);
+      const comments = [];
+      for (let i = 0, nc = 1 + Math.floor(rnd() * 3); i < nc; i++) { const c = Samples.comments[Math.floor(rnd() * Samples.comments.length)]; if (c[0] !== meta.author) comments.push({ author: c[0], text: c[1], t: Date.now() - (meta.ago - i - 1) * 3600e3 }); }
+      const { heat, ...stats } = a.stats;
+      db.entries.push({ id: 'sample-' + meta.name.toLowerCase().replace(/\W+/g, '-'), sample: true, name: meta.name, author: meta.author, description: meta.desc, screenshot: null, design, stats, ratings: a.ratings, silly, created: Date.now() - meta.ago * 3600e3, votes, comments });
+    }
+    Store.set('sky.community.v1', db); Store.set('sky.community.seeded', this.seedVersion);
+  },
+  async open() {
+    await this.seed();
+    const body = el('div');
+    const header = el('div', { class: 'row', style: 'gap:6px' });
+    this.renderHeader(header, body);
+    Modal.open('Community Board', body, [], { wide: true, headerExtra: header });
+    this.renderList(body);
+  },
+  renderHeader(header, body) {
+    const tab = (id, label) => el('button', { class: this.view.category === id ? 'active' : '', onclick: () => { this.view.category = id; header.innerHTML = ''; this.renderHeader(header, body); this.renderList(body); } }, label);
+    const sort = el('select', { onchange: e => { this.view.sort = e.target.value; this.renderList(body); } }, [['top', 'Top rated'], ['new', 'Newest'], ['intense', 'Most intense'], ['fast', 'Fastest']].map(([v, l]) => el('option', { value: v }, l)));
+    sort.value = this.view.sort;
+    const q = el('input', { type: 'text', placeholder: 'Search…', value: this.view.q, style: 'width:140px', oninput: e => { this.view.q = e.target.value; clearTimeout(this._qt); this._qt = setTimeout(() => this.renderList(body), 200); } });
+    header.append(tab('normal', 'Normal Coasters'), tab('silly', '🤪 Silly Coasters'), sort, q);
+  },
+  async renderList(body) {
+    body.innerHTML = '';
+    const list = await this.backend.list(this.view);
+    if (!list.length) { body.append(el('p', { class: 'muted' }, this.view.category === 'silly' ? 'No Silly coasters yet. Turn on Silly Mode in Settings and publish one!' : 'Nothing here yet. Build a coaster and publish it!')); return; }
+    const grid = el('div', { class: 'cards' }); body.append(grid);
+    for (const e of list) {
+      const avg = LocalCommunityBackend.avg(e), nv = Object.keys(e.votes || {}).length;
+      const thumb = el('div', { class: 'thumb' }, el('span', { class: 'tag ' + (e.silly ? 'silly' : 'normal') }, e.silly ? 'SILLY' : 'NORMAL'));
+      if (e.screenshot) thumb.style.backgroundImage = `url(${e.screenshot})`;
+      grid.append(el('div', { class: 'card', onclick: () => this.detail(e.id, body) }, thumb,
+        el('div', { class: 'cb' }, el('div', { class: 't' }, e.name), el('div', { class: 'a' }, 'by ' + e.author + ' · ' + timeAgo(e.created)),
+          el('div', { class: 'm' }, el('span', { class: 'stars' }, starsStr(avg)), el('span', null, avg.toFixed(1) + ' (' + nv + ')'),
+            el('span', null, '⚡ ' + Units.speed(e.stats.maxSpeed, 0)), el('span', null, 'E ' + e.ratings.excitement.toFixed(1)), el('span', null, 'I ' + e.ratings.intensity.toFixed(1))))));
+      if (!e.screenshot) this.queueThumb(e, thumb);
+    }
+  },
+  queueThumb(e, node) {
+    setTimeout(async () => {
+      const url = Thumbs.render(e.design); if (!url) return;
+      node.style.backgroundImage = `url(${url})`; await this.backend.setScreenshot(e.id, url);
+    }, 30);
+  },
+  async detail(id, body) {
+    const e = await this.backend.get(id); if (!e) return;
+    body.innerHTML = '';
+    const me = Settings.d.playerName, avg = LocalCommunityBackend.avg(e), mine = (e.votes || {})[me] || 0;
+    const r = e.ratings, s = e.stats;
+    const picker = el('div', { class: 'starpick' });
+    for (let i = 1; i <= 5; i++) picker.append(el('span', { class: i <= mine ? 'on' : '', onclick: async () => { await this.backend.rate(e.id, me, i); Sound.blip(880); toast('Thanks for rating!', 'good'); this.detail(id, body); } }, '★'));
+    const cIn = el('input', { type: 'text', placeholder: 'Write a comment…', class: 'grow', maxlength: 400 });
+    const send = async () => { if (!cIn.value.trim()) return; await this.backend.comment(e.id, me, cIn.value.trim()); this.detail(id, body); };
+    cIn.addEventListener('keydown', ev => { if (ev.key === 'Enter') send(); ev.stopPropagation(); });
+    const img = el('div', { class: 'thumb', style: `aspect-ratio:16/9;border-radius:12px;background:#1a2a48 center/cover;${e.screenshot ? `background-image:url(${e.screenshot})` : ''}` });
+    body.append(
+      el('div', { class: 'row', style: 'margin-bottom:12px' }, el('button', { onclick: () => this.renderList(body) }, '← Back'), el('div', { class: 'grow' }),
+        e.author === me ? el('button', { class: 'danger', onclick: async () => { await this.backend.remove(e.id, me); toast('Removed'); this.renderList(body); } }, 'Delete') : null,
+        el('button', { onclick: () => { Modal.close(); App.openDesign(Design.validate(Design.clone(e.design))); } }, '✎ Open in Editor'),
+        el('button', { class: 'primary', onclick: () => { Modal.close(); App.openDesign(Design.validate(Design.clone(e.design))); setTimeout(() => Ride.start(), 50); } }, '▶ Ride it')),
+      el('div', { style: 'display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px' },
+        el('div', null, img,
+          el('h2', { style: 'margin:12px 0 2px' }, e.name, ' ', el('span', { class: 'tag ' + (e.silly ? 'silly' : 'normal') }, e.silly ? 'SILLY' : 'NORMAL')),
+          el('div', { class: 'muted' }, 'by ' + e.author + ' · ' + timeAgo(e.created) + ' · ' + STYLES[e.design.style].name),
+          el('p', null, e.description || el('i', { class: 'muted' }, 'No description.')),
+          el('div', { class: 'row' }, el('span', { class: 'stars', style: 'font-size:20px' }, starsStr(avg)), el('b', null, avg.toFixed(1)), el('span', { class: 'muted' }, Object.keys(e.votes || {}).length + ' ratings')),
+          el('div', { class: 'row', style: 'margin-top:8px' }, el('span', null, 'Your rating:'), picker)),
+        el('div', null,
+          ratingTiles(r, e.silly),
+          el('div', { class: 'statgrid' }, [['Top speed', Units.speed(s.maxSpeed)], ['Length', Units.dist(s.length)], ['Max vertical', gFmt(s.maxVG) + ' G'], ['Max lateral', gFmt(s.maxLat) + ' G'], ['Inversions', s.inversions], ['Airtime', s.airtime.toFixed(1) + ' s'], ['Drop', Units.len(s.drop)], ['Duration', fmtTime(s.duration)]].map(([a, b]) => el('div', null, el('small', null, a), el('b', null, b)))),
+          el('h3', { style: 'margin:16px 0 4px' }, 'Comments (' + e.comments.length + ')'),
+          el('div', null, e.comments.slice().reverse().map(c => el('div', { class: 'comment' }, el('b', null, c.author), ' ', el('span', { class: 'muted', style: 'font-size:11px' }, timeAgo(c.t)), el('div', null, c.text)))),
+          el('div', { class: 'row', style: 'margin-top:8px' }, cIn, el('button', { onclick: send }, 'Post'))))
+    );
+    if (!e.screenshot) this.queueThumb(e, img);
+  },
+  publishDialog() {
+    const ed = Editor, d = ed.design;
+    const a = Design.analyze(d, ed.isSilly());
+    if (!a) { toast('Build a track first!', 'bad'); return; }
+    if (a.stats.result !== 'complete') { toast('Your coaster must complete a full test ride before it can be published.', 'bad', 4000); return; }
+    const shot = captureScreenshot();
+    const name = el('input', { type: 'text', value: d.name, maxlength: 40, style: 'width:100%' }), desc = el('textarea', { placeholder: 'Tell riders what makes it special…', maxlength: 400 });
+    [name, desc].forEach(i => i.addEventListener('keydown', ev => ev.stopPropagation()));
+    const silly = ed.isSilly();
+    const body = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:16px' },
+      el('div', null, el('img', { src: shot || '', style: 'width:100%;border-radius:10px;background:#1a2a48;aspect-ratio:16/9' }), el('p', { class: 'hint' }, 'Screenshot is taken from your current camera view. Close this dialog, frame a nice shot, and open Publish again to retake it.')),
+      el('div', null, el('div', { class: 'hint' }, 'Name'), name, el('div', { class: 'hint', style: 'margin-top:10px' }, 'Description'), desc,
+        el('div', { style: 'margin-top:10px' }, 'Category: ', el('span', { class: 'tag ' + (silly ? 'silly' : 'normal') }, silly ? 'SILLY' : 'NORMAL'), silly ? el('div', { class: 'hint' }, 'Silly Mode coasters are listed separately from normal coasters.') : null),
+        el('div', { style: 'margin-top:10px' }, ratingTiles(a.ratings, silly))));
+    Modal.open('Publish to Community', body, [el('button', { onclick: () => Modal.close() }, 'Cancel'), el('button', {
+      class: 'primary', onclick: async () => {
+        d.name = name.value.trim() || d.name; $('#coasterName').value = d.name;
+        const design = ed.serialize(false);
+        const { heat, ...stats } = a.stats;
+        try {
+          const e = await this.backend.publish({ name: d.name, author: Settings.d.playerName, description: desc.value.trim(), screenshot: shot, design, stats, ratings: a.ratings, silly, votes: {}, comments: [] });
+          Modal.close(); Sound.fanfare(); toast('Published “' + e.name + '” to the community board!', 'good', 3500);
+        } catch (err) { toast('Could not publish: ' + err.message, 'bad'); }
+      }
+    }, '🌐 Publish')]);
+  }
+};
+function ratingTiles(r, silly) {
+  const t = (label, v, extra) => el('div', null, el('small', null, label), el('b', { style: `color:${Ratings.color(v)}` }, extra || v.toFixed(1)), el('div', { class: 'meter' }, el('i', { style: `width:${v * 10}%;background:${Ratings.color(v)}` })), el('small', null, Ratings.label(v)));
+  return el('div', { class: 'ratings' },
+    t('Excitement', r.excitement), t('Intensity', r.intensity, r.offCharts ? '10+' : null), t('Nausea', r.nausea),
+    el('div', null, el('small', null, 'Overall'), el('b', { class: 'stars', style: 'font-size:22px;line-height:44px' }, starsStr(r.stars)), el('small', null, r.stars.toFixed(1) + ' stars'), silly ? el('div', null, el('span', { class: 'tag silly' }, 'SILLY')) : null));
+}
 
 </script>
 </body>
