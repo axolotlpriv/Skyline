@@ -975,9 +975,11 @@ class Track {
     const dirs = [];
     for (let i = 0; i < n; i++) {
       const prev = i > 0 ? P[i - 1] : (closed ? P[n - 1] : null), next = i < n - 1 ? P[i + 1] : (closed ? P[0] : null);
-      const d = new V3();
-      if (prev) { const a = P[i].clone().sub(prev), l = a.length(); if (l > 1e-6) d.addScaledVector(a, 1 / l); }
-      if (next) { const b = next.clone().sub(P[i]), l = b.length(); if (l > 1e-6) d.addScaledVector(b, 1 / l); }
+      // Bessel tangent: the shorter neighbouring chord gets more say, which avoids kinks at uneven spacing
+      const d = new V3(), a = prev ? P[i].clone().sub(prev) : null, b = next ? next.clone().sub(P[i]) : null;
+      const la = a ? a.length() : 0, lb = b ? b.length() : 0;
+      if (a && b && la > 1e-6 && lb > 1e-6) { d.addScaledVector(a, lb / (la + lb) / la).addScaledVector(b, la / (la + lb) / lb); }
+      else { if (a && la > 1e-6) d.addScaledVector(a, 1 / la); if (b && lb > 1e-6) d.addScaledVector(b, 1 / lb); }
       if (d.lengthSq() < 1e-8) { d.copy(next || P[i]).sub(prev || P[i]); if (d.lengthSq() < 1e-8) d.set(1, 0, 0); }
       dirs.push(d.normalize());
     }
@@ -1219,6 +1221,7 @@ class PathBuilder {
   turn(deg, R, dy = 0, o = {}) {
     const steps = Math.max(1, Math.ceil(Math.abs(deg) / (o.step || 40))), sgn = Math.sign(deg) || 1, h0 = this.h, y0 = this.p.y;
     const C = this.p.clone().addScaledVector(this.n, sgn * R);
+    if (o.auto && this.nodes.length > 1) this.nodes[this.nodes.length - 1].auto = true;   // bank into the turn from its first node
     for (let k = 1; k <= steps; k++) {
       const t = k / steps, phi = h0 + deg * Math.PI / 180 * t;
       const pos = new V3(C.x + sgn * R * Math.sin(phi), y0 + dy * (o.ease ? smoothstep(t) : t), C.z - sgn * R * Math.cos(phi));
@@ -1228,7 +1231,7 @@ class PathBuilder {
   }
   helix(turns, R, dy, dir, o = {}) { return this.turn(360 * turns * dir, R, dy, Object.assign({ auto: true }, o)); }
   hill(len, height, o = {}) {
-    const K = o.k || 6, b = this.p.clone(), f = this.f;
+    const K = Math.max(o.k || 6, Math.ceil(len / 9)), b = this.p.clone(), f = this.f;
     for (let k = 1; k <= K; k++) { const t = k / K; this.node(b.clone().addScaledVector(f, len * t).add(new V3(0, height * (1 - Math.cos(2 * Math.PI * t)) / 2 + (o.dy || 0) * t, 0)), o); }
     return this;
   }
@@ -1262,9 +1265,10 @@ class PathBuilder {
   }
   // heartline roll: rider stays on an axis, the rail spirals around it (zero-g roll / corkscrew)
   roll(len, radius, dir = 1, hump = 0, o = {}) {
-    const K = o.k || 8, b = this.p.clone(), f = this.f, side = this.n.negate();
+    const K = o.k || 12, b = this.p.clone(), f = this.f, side = this.n.negate();
+    const ease = t => t * t * t * (t * (t * 6 - 15) + 10);   // smootherstep: roll rate starts and ends at zero
     for (let k = 1; k <= K; k++) {
-      const t = k / K, th = dir * Math.PI * 2 * t;
+      const t = k / K, th = dir * Math.PI * 2 * ease(t);
       const axis = b.clone().addScaledVector(f, len * t).add(new V3(0, radius + hump * Math.sin(Math.PI * t) + (o.dy || 0) * t, 0));
       const up = new V3(0, Math.cos(th), 0).addScaledVector(side, Math.sin(th));
       this.node(axis.addScaledVector(up, -radius), Object.assign({}, o, { roll: wrapDeg(th * 180 / Math.PI) }));
@@ -1810,13 +1814,13 @@ const Ratings = {
     let E = 0.8 + Math.min(2.4, mph / 30) + Math.min(2.2, st.airtime * 0.42) + Math.min(1.9, st.inversions * 0.45) + Math.min(1.2, st.drop / 40) +
       Math.min(0.9, st.length / 900) + Math.min(0.7, st.duration / 100) + (st.launches ? 0.5 : 0) + Math.max(0, 0.8 - st.jerk * 0.04);
     const rawI = I;
-    if (I > 7.5) E -= (I - 7.5) * (silly ? 0.25 : 0.8);
-    if (N > 6) E -= (N - 6) * (silly ? 0.2 : 0.6);
+    if (silly) { E += Math.min(2.5, mph / 200) + Math.min(1, Math.max(0, st.maxVG - 6) / 40); E -= (Math.min(I, 10) - 7.5 > 0 ? (Math.min(I, 10) - 7.5) * 0.3 : 0) + Math.max(0, Math.min(N, 10) - 6) * 0.2; }
+    else { if (I > 7.5) E -= (I - 7.5) * 0.8; if (N > 6) E -= (N - 6) * 0.6; }
     if (st.result !== 'complete') E *= 0.4;
     if (st.unsafe && !silly) E *= 0.55;
     E = clamp(E, 0, 10); I = clamp(I, 0, 10); N = clamp(N, 0, 10);
     const smoothness = clamp(10 - st.jerk * 0.5, 0, 10);
-    let sc = E / 2 + (I >= 3 && I <= 7.5 ? 0.3 : 0) - Math.max(0, N - 6.5) * 0.25;
+    let sc = E / 2 + (I >= 3 && I <= 7.5 ? 0.3 : 0) + (I < 3 && E > 4 ? 0.5 : 0) - (silly ? 0 : Math.max(0, N - 6.5) * 0.25);
     let stars = clamp(Math.round(sc * 2) / 2, 0.5, 5);
     if (st.result !== 'complete') stars = Math.min(stars, 1);
     return { excitement: +E.toFixed(2), intensity: +I.toFixed(2), nausea: +N.toFixed(2), stars, smoothness: +smoothness.toFixed(1), offCharts: rawI > 10 };
@@ -1893,14 +1897,16 @@ Object.assign(PathBuilder.prototype, {
   },
   autoTurn(deg, latG = 1.5, dy = 0) {
     const v = this.vEst(this.p.y + dy / 2), R = clamp(v * v / (this.g * latG), 9, 400);
-    return this.turn(deg, R, dy, { auto: true });
+    this.turn(deg, R, dy, { auto: true });
+    return this.straight(Math.max(8, v * 0.6), { auto: true });   // run-out lets the bank unwind smoothly
   },
   autoHelix(turns, dir, dy = 0) {
     const v = this.vEst(this.p.y + dy / 2), R = clamp(v * v / (this.g * 1.9), 10, 300);
-    return this.turn(360 * turns * dir, R, dy, { auto: true, step: 36 });
+    this.turn(360 * turns * dir, R, dy, { auto: true, step: 36 });
+    return this.straight(Math.max(8, v * 0.6), { auto: true });
   },
-  corkscrew(dir = 1) { const v = this.vEst(); return this.roll(Math.max(22, v * 1.45), 4.2, dir, 0, { k: 8 }); },
-  zeroG(dir = 1) { const v = this.vEst(); return this.roll(Math.max(24, v * 1.7), 1.3, dir, 5, { k: 8 }); },
+  corkscrew(dir = 1) { const v = this.vEst(); return this.roll(Math.max(24, v * 1.6), 1.6, dir, 2.5, { k: 12 }); },
+  zeroG(dir = 1) { const v = this.vEst(); return this.roll(Math.max(28, v * 2.1), 1.1, dir, 5, { k: 12 }); },
   // bring an out-and-back layout home: brake run, line up, 180° turn into the station
   home(st, brakeLen = 26) {
     // coast back alongside the station, U-turn behind it, then brake into the platform
@@ -1909,12 +1915,14 @@ Object.assign(PathBuilder.prototype, {
     if (d > 1) {
       const n = Math.ceil(d / 60);
       for (let i = 0; i < n; i++) {
-        if (this.vEst() < 9) this.setPiece('lift', { speed: 8 });   // booster tyres keep a slow train moving home
+        if (d / n > 30) this.setPiece('lift', { speed: 6 });   // booster tyres keep a slow train moving home (never slow a fast one)
         this.straight(d / n, { dy: (st.y + 1 - this.p.y) / (n - i) * 0.8 });
       }
     }
     const side = Math.sign(target.clone().sub(this.p).dot(this.n)) || 1;
+    const boosted = this.nodes[this.nodes.length - 2] && this.nodes[this.nodes.length - 2].type === 'lift', i0 = this.nodes.length - 1;
     this.uturnTo(target, side, st.y - this.p.y);
+    if (boosted) for (let i = i0; i < this.nodes.length - 1; i++) { this.nodes[i].type = 'lift'; this.nodes[i].speed = 6; }
     const last = this.nodes[this.nodes.length - 1]; last.auto = false; last.roll = 0;
     this.setPiece('brake', { speed: 4 });
     return this;
@@ -1985,16 +1993,16 @@ const Samples = {
     mk({ name: 'Old Timber', author: 'WoodieWendy', desc: 'Rickety, rattly and full of floater airtime. Built with love (and splinters).', ago: 30 }, 'wooden',
       (b, st) => b.liftHill(30, 35).dropTo(3.5, 48, 3).airHill(11, 0).autoTurn(90, 1.3).airHill(7, 0).autoTurn(90, 1.3).airHill(9, 0).airHill(6, 0).home(st), { cars: 4 });
     mk({ name: 'Looping Lagoon', author: 'LoopLord', desc: 'Two loops, a corkscrew and a zero-g roll over the lake. Four inversions of pure joy.', ago: 50 }, 'steel',
-      (b, st) => b.liftHill(38, 40).dropTo(4, 55, 3.2).straight(6).autoLoop(1).straight(10).corkscrew(1).straight(8).autoTurn(180, 1.4, 2).straight(6).autoLoop(-1).straight(8).zeroG(-1).straight(6).home(st),
+      (b, st) => b.liftHill(38, 40).dropTo(4, 55, 3.2).straight(6).autoLoop(1).straight(12).corkscrew(1).straight(12).autoTurn(180, 1.4, 2).straight(6).autoLoop(-1).straight(10).zeroG(-1).straight(10).home(st),
       { colors: { track: '#21c4b8', support: '#f3f3f3', train: '#ff6b3d' } });
     mk({ name: 'Night Viper', author: 'venom_rides', desc: 'An inverted beast that only comes out at night. Feet dangling, lights blazing.', ago: 75 }, 'inverted',
-      (b, st) => b.liftHill(40, 40).dropTo(4.5, 58, 3.3).straight(6).autoLoop(1).straight(8).zeroG(1).straight(6).autoHelix(1, 1, 0).straight(4).corkscrew(-1).straight(6).home(st),
+      (b, st) => b.liftHill(40, 40).dropTo(4.5, 58, 3.3).straight(6).autoLoop(1).straight(10).zeroG(1).straight(10).autoTurn(180, 1.5).autoHelix(1, -1, 0).straight(6).corkscrew(-1).straight(12).home(st),
       { env: { time: 22.5, weather: 'night', cycle: false }, colors: { track: '#5ef04f', support: '#22262e', train: '#7a2cff' } });
     mk({ name: 'Family Breeze', author: 'GrandmaGs', desc: 'Gentle hills and a little helix. My grandkids rode it 14 times in a row.', ago: 120 }, 'steel',
       (b, st) => b.liftHill(13, 30, 3).dropTo(3, 35, 2.2).airHill(3, 0.4).autoTurn(180, 1.0).autoHelix(1, 1, 0).airHill(2.5, 0.4).home(st, 18),
       { cars: 4, colors: { track: '#ffb3d1', support: '#ffffff', train: '#7ec8ff' } });
     mk({ name: 'Rocket Reef', author: 'launchpad_luke', desc: 'LSM launch to 85 mph straight into a giant hill and a loop. 3... 2... 1...', ago: 160 }, 'steel',
-      (b, st) => b.straight(6).launchTrack(70, 38, 3).straight(4).airHill(40, -0.1).autoLoop(1).straight(8).autoTurn(180, 1.5).corkscrew(1).straight(6).airHill(8).home(st),
+      (b, st) => b.straight(6).launchTrack(70, 38, 3).airHill(40, -0.1).straight(8).autoLoop(1).straight(10).autoTurn(180, 1.5).straight(6).corkscrew(1).straight(12).airHill(8).home(st),
       { colors: { track: '#ffd23f', support: '#1f6fd1', train: '#f03c3c' } });
     mk({ name: 'HYPERDRIVE 9000', author: 'xX_GForce_Xx', desc: '0 to 500 mph in 0.3 seconds. Doctors hate it. Riders were last seen near Jupiter.', ago: 20 }, 'steel',
       (b, st) => { b.straight(6).launchTrack(90, 223.5, 0.3, 'accel'); b.loop(105, 6, 1, { k: 18 }); b.straight(30).autoTurn(180, 40); b.straight(30); b.home(st, 230); },
