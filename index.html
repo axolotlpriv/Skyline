@@ -344,6 +344,7 @@ button,.tile,.mnav,.card,.chal,select,input[type=range],input[type=color],.switc
   linear-gradient(var(--cyan),var(--cyan)) right 0 top 0/12px 1.5px no-repeat,linear-gradient(var(--cyan),var(--cyan)) right 0 top 0/1.5px 12px no-repeat,
   linear-gradient(var(--cyan),var(--cyan)) left 0 bottom 0/12px 1.5px no-repeat,linear-gradient(var(--cyan),var(--cyan)) left 0 bottom 0/1.5px 12px no-repeat}
 #modal{position:relative}
+#viewport canvas.hov{cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M4 3 L4 22 L9.5 17 L13 25 L16.5 23.5 L13 15.8 L20.5 15.8 Z' fill='%23ffb347' stroke='%23071226' stroke-width='1.8' stroke-linejoin='round'/%3E%3Cpath d='M6 7 L6 18' stroke='%23fff' stroke-width='1.6'/%3E%3C/svg%3E") 4 3,pointer!important}
 body.lowfx .glass,body.lowfx #modalWrap{backdrop-filter:none;-webkit-backdrop-filter:none}
 #tooltip.long{white-space:normal;max-width:300px;line-height:1.4;font:500 12.5px var(--fb);letter-spacing:.01em}
 .sec h3 .info{margin-left:auto;display:inline-flex;color:var(--ink3);cursor:help}
@@ -2086,6 +2087,7 @@ class Track {
     const j = this.closed ? (i + 1) % N : i + 1;
     return this.ty[i] * (1 - f) + this.ty[j] * f;
   }
+  sampleIdx(s) { const k = Math.floor(this.wrap(s) / this.ds); return this.closed ? k % this.N : clamp(k, 0, this.N - 1); }
   inStation(s) {
     if (this.stationK < 0) return false;
     let d = s - this.startS; if (this.closed) { d %= this.L; if (d < 0) d += this.L; }
@@ -2973,7 +2975,10 @@ class Sim {
     let vn = v - g * ty * h;
     const fr = (this.mu * Nf + this.drag * v2) * h;
     if (Math.abs(vn) <= fr) vn = 0; else vn -= Math.sign(vn) * fr;
-    const c = F.code, tv = F.pv;
+    let c = F.code, tv = F.pv;
+    if (c !== 2) {   // the chain holds the train while ANY car is on it (front car catches it, rear car leaves it last)
+      for (const o of [this.offs[0], this.offs[this.offs.length - 1]]) { const k = tr.sampleIdx(this.s + o); if (tr.code[k] === 2) { c = 2; tv = tr.pv[k]; break; } }
+    }
     this.onLift = c === 2;
     if (c !== this.lastCode) {
       if ((c === 5 || c === 6) && this.onLaunch) this.onLaunch(tv, F.pt);
@@ -3717,7 +3722,7 @@ const Editor = {
     const nodes = this.design.nodes, n = nodes.length, show = App.state === 'editor';
     if (this.handles) { this.scene.remove(this.handles); this.handles.dispose(); }
     if (this.stems) { this.scene.remove(this.stems); this.stems.geometry.dispose(); }
-    this.handles = new THREE.InstancedMesh(GEO.sph(1, 12, 8), this.handleMat, Math.max(1, n)); this.handles.count = n; this.handles.renderOrder = 8;
+    this.handles = new THREE.InstancedMesh(GEO.sph(1, 12, 8), this.handleMat, Math.max(1, n)); this.handles.count = n; this.handles.renderOrder = 8; this.hover = -1;
     const m = new THREE.Matrix4(), c = new THREE.Color(), sp = [], s = new V3();
     const scale = clamp(Cam.dist / 160, 0.55, 2.4 * Env.viewScale);
     nodes.forEach((nd, i) => {
@@ -3734,6 +3739,22 @@ const Editor = {
     this.handles.visible = this.stems.visible = show;
     this.scene.add(this.handles, this.stems);
     this.handleScale = scale;
+  },
+  // hovered node handle swells and brightens (only that instance is touched, so it stays cheap)
+  hover: -1,
+  setHover(i) {
+    if (i === this.hover || !this.handles) return;
+    const m = new THREE.Matrix4(), set = (j, big) => {
+      const nd = this.design.nodes[j]; if (!nd || j >= this.handles.count) return;
+      const selected = this.sel.includes(j), prim = j === this.primary, sc = (prim ? 1.25 : selected ? 1.05 : 0.8) * this.handleScale * (big ? 1.45 : 1);
+      m.compose(_p.set(nd.x, nd.y, nd.z), _q.identity(), _s.setScalar(sc)); this.handles.setMatrixAt(j, m);
+      const c = new THREE.Color(PIECES[nd.type] ? PIECES[nd.type].color : '#fff'); if (selected || big) c.lerp(new THREE.Color(0xffffff), big ? 0.6 : prim ? 0.75 : 0.5);
+      this.handles.setColorAt(j, c);
+    };
+    if (this.hover >= 0) set(this.hover, false);
+    this.hover = i; if (i >= 0) { set(i, true); if (this.tool === 'select') Sound.ui('hover'); }
+    this.handles.instanceMatrix.needsUpdate = true; if (this.handles.instanceColor) this.handles.instanceColor.needsUpdate = true;
+    R.renderer.domElement.classList.toggle('hov', i >= 0);
   },
   setVisible(v) {
     if (Builder.ghost) Builder.ghost.visible = v;
@@ -3897,6 +3918,7 @@ const Editor = {
       return true;
     }
     info.classList.add('hidden');
+    if (this.tool === 'select' || this.tool === 'delete') this.setHover(this.pickNode(mx, my)); else this.setHover(-1);
     // hover helpers
     this.ghost.visible = false; this.ring.visible = false;
     if (this.tool === 'add') {
@@ -4479,12 +4501,33 @@ const Builder = {
     Editor.commit(); Sound.ui('undo');
     this.refresh(true); this.syncConsole();
   },
+  // auto-complete: plan a smooth Bézier path from the build head into the back of the station,
+  // keep it above ground, finish with a brake run, then close the circuit
   complete() {
-    const d = Editor.design;
-    if (d.nodes.length < 3) { toast('Build a few pieces first', 'bad'); return; }
+    const d = Editor.design, nodes = d.nodes;
+    if (nodes.length < 3) { toast('Build a few pieces first', 'bad'); return; }
+    const h = this.headInfo(), tr = Editor.track, s0 = nodes[0];
+    const D0 = new V3(Math.cos(h.pitch) * Math.cos(h.yaw), Math.sin(h.pitch), Math.cos(h.pitch) * Math.sin(h.yaw)).normalize();
+    const D3 = tr && tr.ok ? new V3(tr.tx[0], 0, tr.tz[0]).normalize() : new V3(nodes[1].x - s0.x, 0, nodes[1].z - s0.z).normalize();
+    const P0 = h.pos.clone(), P3 = new V3(s0.x, s0.y, s0.z).addScaledVector(D3, -14);
+    const dist = P0.distanceTo(P3);
+    if (dist > 6) {
+      const k = Math.max(12, dist * 0.42), B1 = P0.clone().addScaledVector(D0, k), B2 = P3.clone().addScaledVector(D3, -k);
+      const n = Math.max(2, Math.ceil(dist / 16)), add = [];
+      for (let i = 1; i <= n; i++) {
+        const t = i / n, u = 1 - t, p = new V3().addScaledVector(P0, u * u * u).addScaledVector(B1, 3 * u * u * t).addScaledVector(B2, 3 * u * t * t).addScaledVector(P3, t * t * t);
+        p.y = Math.max(p.y, Terrain.groundAt(p.x, p.z) + 1.2);
+        add.push(newNode(+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2), { auto: true, type: t > 0.7 ? 'brake' : 'track' }));
+      }
+      add[add.length - 1].auto = false; add[add.length - 1].roll = 0;
+      nodes[nodes.length - 1].type = 'track';
+      nodes.push(...add);
+    }
+    nodes[nodes.length - 1].type = 'brake'; nodes[nodes.length - 1].speed = 4;
     d.closed = true; Editor.commit();
     this.exit(); Editor.dockTab = 'elements'; Editor.renderDock();
-    toast('Circuit closed! The last node now links back to the station. Smooth it out with the node tools if needed.', 'good', 4200);
+    Cam.focus(new V3(nodes[0].x, nodes[0].y, nodes[0].z), 140);
+    toast('Circuit complete! A smooth return path and brake run lead back into the station.', 'good', 4200);
   },
   onKey(e) {
     const k = e.key.toLowerCase(), f = e.shiftKey;
@@ -4560,6 +4603,7 @@ const Builder = {
     line('Speed', Units.speed(i.v, 0), i.stall ? 'warn' : '');
     line('Height', Units.len(i.height));
     if (isFinite(i.R)) line('Radius', Units.len(i.R), i.latG > 2.5 && !this.p.auto ? 'warn' : '');
+    if (isFinite(i.R)) line(this.p.auto ? 'Turn G' : 'Lateral', gFmt(this.p.auto ? Math.hypot(1, i.latG) : i.latG) + ' G', i.latG > (this.p.auto ? 4 : 1.8) ? 'warn' : '');
     if (i.under && !Settings.d.silly) line('!', 'Underground', 'bad');
     else if (i.stall) line('!', 'Too slow: add a lift', 'warn');
   }
