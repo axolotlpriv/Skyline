@@ -192,6 +192,7 @@ body.building #statusLine{bottom:386px}
 .bread{display:grid;grid-template-columns:1fr 1fr;gap:1px 8px;font:600 11px var(--fd);letter-spacing:.05em}
 .bread div{display:flex;justify-content:space-between;gap:4px;color:var(--ink2)}
 .bread b{color:#fff}.bread .warn,.bread .warn b{color:var(--warn)}
+.bread .tun,.bread .tun b{color:#b9adff}
 .bread .msg{grid-column:1/-1;justify-content:flex-start!important}.bread .bad,.bread .bad b{color:var(--bad)}
 .bkeys{display:flex;align-items:center;gap:5px;font:600 11px var(--fd);letter-spacing:.06em;color:var(--ink3);white-space:nowrap}
 .bkeys kbd{font-size:10px;padding:0 4px}
@@ -821,7 +822,7 @@ const Sound = {
     // ---- ride bed: everything the train makes, routed through a spatial gain + pan ----
     this.rideG = c.createGain(); this.ridePan = c.createStereoPanner ? c.createStereoPanner() : c.createGain();
     this.rideG.connect(this.ridePan); this.ridePan.connect(this.bus.sfx);
-    const rideSend = c.createGain(); rideSend.gain.value = 0.12; this.rideG.connect(rideSend); rideSend.connect(this.verb);
+    const rideSend = this.rideSend = c.createGain(); rideSend.gain.value = 0.12; this.rideG.connect(rideSend); rideSend.connect(this.verb);
     this.windF = c.createBiquadFilter(); this.windF.type = 'bandpass'; this.windF.Q.value = 0.7; this.windF.frequency.value = 400;
     this.windG = c.createGain(); this.windG.gain.value = 0;
     loop(buf).connect(this.windF); this.windF.connect(this.windG); this.windG.connect(this.bus.sfx);   // wind is felt by the rider, not spatial
@@ -969,10 +970,12 @@ const Sound = {
     this.rideG.gain.setTargetAtTime(att, t, 0.08);
     if (this.ridePan.pan) this.ridePan.pan.setTargetAtTime(pov ? 0 : clamp(info.pan || 0, -0.9, 0.9), t, 0.08);
     const s = Math.min(sp, 400);
-    this.windG.gain.setTargetAtTime(Math.min(0.9, s * s * 0.00016 + (s > 1 ? 0.01 : 0)) * (pov ? 1 : 0.15), t, 0.15);
+    const tun = info.tunnel ? 1 : 0;                      // tunnels: less wind, boomier rumble, long echo
+    this.rideSend.gain.setTargetAtTime(0.12 + tun * 0.55, t, 0.25);
+    this.windG.gain.setTargetAtTime(Math.min(0.9, s * s * 0.00016 + (s > 1 ? 0.01 : 0)) * (pov ? 1 : 0.15) * (1 - 0.6 * tun), t, 0.15);
     this.windF.frequency.setTargetAtTime(250 + Math.min(4000, s * 28), t, 0.2);
     const wood = info.style === 'wooden';
-    this.rumG.gain.setTargetAtTime(Math.min(0.55, s * 0.018) * (wood ? 1.3 : 1), t, 0.1);
+    this.rumG.gain.setTargetAtTime(Math.min(0.55, s * 0.018) * (wood ? 1.3 : 1) * (1 + 0.5 * tun), t, 0.1);
     this.rumF.frequency.setTargetAtTime(90 + Math.min(500, s * 6), t, 0.1);
     this.roarG.gain.setTargetAtTime(wood ? 0 : Math.min(0.22, s * 0.006), t, 0.1);
     this.roarF.frequency.setTargetAtTime(500 + Math.min(2600, s * 40), t, 0.15);
@@ -2410,6 +2413,7 @@ const TrackRenderer = {
     for (let k = 0; k < tr.N; k += 6) { for (const sd of [-0.75, 0.75]) lp.push(tr.px[k] + tr.sx[k] * sd, tr.py[k] + tr.sy[k] * sd + tr.uy[k] * 0.1, tr.pz[k] + tr.sz[k] * sd); }
     const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
     const pts = new THREE.Points(lg, Lights.pointMat); grp.add(pts);
+    Tunnel.build(tr, design, grp, ground);      // first, so supports can skip the bored sections
     this.buildSupports(tr, design, grp, ground, instanced, pushI, supColor, stS);
     // shadow casters: rails are fine; supports cast too
     return grp;
@@ -2429,7 +2433,7 @@ const TrackRenderer = {
       const foot = instanced(box, footMat, bents * 2, false);
       const prevPosts = [];
       for (let k = 0; k < tr.N; k += stepK) {
-        if (isStation(k)) continue;
+        if (isStation(k) || tr.tun[k]) continue;
         P.set(tr.px[k], tr.py[k], tr.pz[k]); U.set(tr.ux[k], tr.uy[k], tr.uz[k]);
         const gy = ground(P.x, P.z), h = P.y - 0.5 - gy;
         if (h < 0.6) continue;
@@ -2475,7 +2479,7 @@ const TrackRenderer = {
     const addCol = (a, b, r) => pushI(cols, matBetween(m, a, b, r));
     const addFoot = (x, gy, z, r) => pushI(foot, m.compose(_p.set(x, gy + 0.15, z), _q.identity(), _s.set(r * 1.8, 0.6, r * 1.8)));
     for (let k = 0; k < tr.N; k += stepK) {
-      if (isStation(k) || near(k)) continue;
+      if (isStation(k) || near(k) || tr.tun[k]) continue;
       P.set(tr.px[k], tr.py[k], tr.pz[k]); U.set(tr.ux[k], tr.uy[k], tr.uz[k]); Sd.set(tr.sx[k], tr.sy[k], tr.sz[k]); K.set(tr.railK[0][k], tr.railK[1][k], tr.railK[2][k]);
       const gy = ground(P.x, P.z);
       if (P.y - gy < 1.3) continue;
@@ -2727,19 +2731,34 @@ const TrackFX = {
    TERRAIN SPLATTING — grass / rock / sand detail blended by slope & height
    ===================================================================== */
 const TerrainFX = {
+  ensure() {
+    if (this.U) return this.U;
+    const A = [], B = []; for (let i = 0; i < 64; i++) { A.push(new V3()); B.push(new V3()); }
+    return (this.U = { uWater: { value: Terrain.water }, uHoleA: { value: A }, uHoleB: { value: B }, uHoleR: { value: Tunnel.R + 0.12 }, uHoleN: { value: 0 } });
+  },
+  // cut portal holes where tunnels leave the hillside (capsule segments in world space)
+  setHoles(list) {
+    const U = this.ensure(), n = Math.min(64, list.length);
+    for (let i = 0; i < n; i++) { U.uHoleA.value[i].copy(list[i][0]); U.uHoleB.value[i].copy(list[i][1]); }
+    U.uHoleN.value = n;
+  },
   apply() {
-    const m = Terrain.mesh.material, on = Gfx.lv() >= 2;
+    const m = Terrain.mesh.material, on = Gfx.lv() >= 2, U = this.ensure();
     if (on === this.on) return; this.on = on;
     m.map = null;
-    if (!on) { m.onBeforeCompile = () => { }; m.normalMap = null; m.customProgramCacheKey = () => 'plain'; m.needsUpdate = true; return; }
-    m.normalMap = Gfx.lv() >= 3 ? Tex2.get('grassN') : null; m.normalScale = new THREE.Vector2(0.55, 0.55);
-    const U = { tG: { value: Tex2.get('grassD') }, tR: { value: Tex2.get('rockD') }, tS: { value: Tex2.get('sandD') }, uWater: { value: Terrain.water } };
-    this.U = U;
+    if (on && !U.tG) Object.assign(U, { tG: { value: Tex2.get('grassD') }, tR: { value: Tex2.get('rockD') }, tS: { value: Tex2.get('sandD') } });
+    m.normalMap = on && Gfx.lv() >= 3 ? Tex2.get('grassN') : null; m.normalScale = new THREE.Vector2(0.55, 0.55);
     m.onBeforeCompile = sh => {
       Object.assign(sh.uniforms, U);
       sh.vertexShader = 'varying vec3 vWP; varying vec3 vWN;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
         vWP = (modelMatrix * vec4(position, 1.0)).xyz; vWN = normalize(mat3(modelMatrix) * normal);`);
-      sh.fragmentShader = 'uniform sampler2D tG, tR, tS; uniform float uWater; varying vec3 vWP; varying vec3 vWN;\n' + sh.fragmentShader.replace('#include <map_fragment>', `
+      let f = (on ? 'uniform sampler2D tG, tR, tS;\n' : '') + 'uniform float uWater; uniform vec3 uHoleA[64]; uniform vec3 uHoleB[64]; uniform float uHoleR; uniform int uHoleN; varying vec3 vWP; varying vec3 vWN;\n' + sh.fragmentShader;
+      f = f.replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+        for (int i = 0; i < 64; i++) { if (i >= uHoleN) break;
+          vec3 a = uHoleA[i], ba = uHoleB[i] - a, pa = vWP - a;
+          float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
+          if (length(pa - ba * h) < uHoleR) discard; }`);
+      if (on) f = f.replace('#include <map_fragment>', `
         { float slope = 1.0 - clamp(vWN.y, 0.0, 1.0);
           vec3 g = texture2D(tG, vWP.xz * 0.21).rgb * (0.75 + 0.5 * texture2D(tG, vWP.xz * 0.023).g);
           vec3 r = texture2D(tR, vWP.xz * 0.08 + vec2(vWP.y * 0.06)).rgb;
@@ -2747,8 +2766,9 @@ const TerrainFX = {
           vec3 det = mix(g, r, smoothstep(0.3, 0.55, slope));
           det = mix(det, s, 1.0 - smoothstep(uWater + 0.3, uWater + 1.1, vWP.y));
           diffuseColor.rgb *= det * 1.45; }`);
+      sh.fragmentShader = f;
     };
-    m.customProgramCacheKey = () => 'splat' + (m.normalMap ? 'n' : '');
+    m.customProgramCacheKey = () => 'terrain-' + (on ? 'splat' : 'plain') + (m.normalMap ? 'n' : '') + '-holes';
     m.needsUpdate = true;
   }
 };
@@ -2926,6 +2946,70 @@ const Birds = {
       this.mesh.setMatrixAt(i, m.compose(p, q, s));
     });
     this.mesh.instanceMatrix.needsUpdate = true;
+  }
+};
+
+/* =====================================================================
+   AUTO TUNNELS — wherever the track dives below the terrain, a lined
+   bore with portal collars and lamps is generated, and a matching hole
+   is cut in the terrain so you can see in through the hillside.
+   ===================================================================== */
+const Tunnel = {
+  R: 3.6,
+  off(design) { return design.style === 'inverted' ? -0.9 : 0.9; },
+  detect(tr, ground) {
+    const N = tr.N, ds = tr.ds, d = new Float32Array(N), core = [];
+    for (let k = 0; k < N; k++) d[k] = ground(tr.px[k], tr.pz[k]) - tr.py[k];
+    let s = -1;
+    for (let k = 0; k < N; k++) { const on = d[k] > 1.2; if (on && s < 0) s = k; if (!on && s >= 0) { core.push([s, k - 1]); s = -1; } }
+    if (s >= 0) core.push([s, N - 1]);
+    const gapN = Math.round(12 / ds), minN = Math.round(6 / ds), exp = Math.round(5 / ds), merged = [];
+    for (const c of core) { const l = merged[merged.length - 1]; if (l && c[0] - l[1] < gapN) l[1] = c[1]; else merged.push(c.slice()); }
+    const runs = merged.filter(c => c[1] - c[0] + 1 >= minN).map(([a, b]) => ({ a: Math.max(0, a - exp), b: Math.min(N - 1, b + exp), ca: a, cb: b }));
+    return { runs, d };
+  },
+  build(tr, design, grp, ground) {
+    tr.tun = new Uint8Array(tr.N); grp.userData.holes = [];
+    if (design.autoTunnel === false || !tr.ok) return;
+    const { runs, d } = this.detect(tr, ground); if (!runs.length) return;
+    const R = this.R, off = this.off(design), ds = tr.ds, shadows = Gfx.shadows();
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.92, metalness: 0.04, emissive: 0x2a2520, envMapIntensity: 0.15 });
+    const lampMat = Lights.make(0xffe2b0), lampGeo = GEO.box(0.55, 0.1, 0.28), lamps = [], holes = grp.userData.holes;
+    const step = Math.max(2, Math.ceil(tr.N / 24000));
+    const centre = k => new V3(tr.px[k] + tr.ux[k] * off, tr.py[k] + tr.uy[k] * off, tr.pz[k] + tr.uz[k] * off);
+    for (const run of runs) {
+      for (let k = run.a; k <= run.b; k++) tr.tun[k] = 1;
+      const ks = TrackRenderer.ringList(tr, step, run.a, run.b, false), prof = PROF.circle(R, 18);
+      const g = TrackRenderer.sweep(tr, ks, 0, off, prof, '#8f8e88'), col = g.attributes.color.array, P = prof.pts.length;
+      for (let r = 0; r < ks.length; r++) {              // segmental lining: every third ring a shade darker
+        const f = Math.floor(r / 3) % 2 ? 0.8 : 1;
+        for (let j = 0; j < P; j++) { const o = (r * P + j) * 3; col[o] *= f; col[o + 1] *= f; col[o + 2] *= f; }
+      }
+      const tube = new THREE.Mesh(g, mat); tube.name = 'tunnel'; tube.castShadow = shadows; grp.add(tube);
+      // portal collars: a heavier concrete ring at each mouth
+      for (const [ka, kb] of [[run.a, Math.min(run.b, run.a + 5)], [Math.max(run.a, run.b - 5), run.b]]) {
+        const cg = TrackRenderer.sweep(tr, TrackRenderer.ringList(tr, 1, ka, kb, false), 0, off, PROF.circle(R + 0.55, 18), '#c2bfb4');
+        const m = new THREE.Mesh(cg, mat); m.castShadow = shadows; grp.add(m);
+      }
+      // lamps along the crown
+      for (let k = run.a + Math.round(8 / ds); k < run.b - Math.round(6 / ds); k += Math.round(5 / ds)) {
+        const c = centre(k); lamps.push([c.x, c.y + R - 0.3, c.z, k]);
+      }
+      // terrain holes: capsule chain along the bore until the ground is clearly above the crown
+      for (const side of [1, -1]) {
+        let k = side > 0 ? run.a : run.b, prev = centre(k), travelled = 0;
+        while (travelled < 45 && holes.length < 64) {
+          const nk = clamp(k + side * Math.round(3 / ds), run.a, run.b); if (nk === k) break;
+          const cur = centre(nk); holes.push([prev, cur]); prev = cur; travelled += 3; k = nk;
+          if (d[k] > R + Math.abs(off) + 1.6) break;
+        }
+      }
+    }
+    if (lamps.length) {
+      const im = new THREE.InstancedMesh(lampGeo, lampMat, lamps.length), m4 = new THREE.Matrix4(), S = new V3(), U = new V3(), T = new V3(), Pp = new V3();
+      lamps.forEach(([x, y, z, k], i) => { S.set(tr.sx[k], tr.sy[k], tr.sz[k]); U.set(tr.ux[k], tr.uy[k], tr.uz[k]); T.set(tr.tx[k], tr.ty[k], tr.tz[k]); m4.makeBasis(S, U, T).setPosition(Pp.set(x, y, z)); im.setMatrixAt(i, m4); });
+      im.frustumCulled = false; grp.add(im);
+    }
   }
 };
 
@@ -3268,7 +3352,7 @@ Object.assign(PathBuilder.prototype, {
 const Design = {
   base(style = 'steel') {
     return {
-      format: 'skyline-coaster', version: 1, id: uid(), name: 'Untitled Coaster', style, closed: true, cars: 5,
+      format: 'skyline-coaster', version: 1, id: uid(), name: 'Untitled Coaster', style, closed: true, autoTunnel: true, cars: 5,
       colors: style === 'wooden' ? { track: '#8a6038', support: '#b48a5a', train: '#c8352f' } : style === 'inverted' ? { track: '#3e7bd6', support: '#2b2f3a', train: '#ffcc33' } : { track: '#e8452c', support: '#d8dde6', train: '#2d7ff9' },
       nodes: [], scenery: [], env: { time: 13, weather: 'sunny', cycle: false }, physics: { lowGravity: false }, rainbow: false, terrain: { gen: 7 }
     };
@@ -3700,7 +3784,7 @@ const Editor = {
   isSilly() { return Settings.d.silly || (this.design && Design.isSilly(this.design)); },
   snapshot() {
     const d = this.design;
-    return { j: JSON.stringify({ nodes: d.nodes, closed: d.closed, style: d.style, cars: d.cars, colors: d.colors, physics: d.physics, rainbow: d.rainbow, scenery: Scenery.items }), h: Terrain.h.slice(), w: Terrain.water };
+    return { j: JSON.stringify({ nodes: d.nodes, closed: d.closed, autoTunnel: d.autoTunnel, style: d.style, cars: d.cars, colors: d.colors, physics: d.physics, rainbow: d.rainbow, scenery: Scenery.items }), h: Terrain.h.slice(), w: Terrain.water };
   },
   pushHistory() {
     this.history.length = this.hidx + 1;
@@ -3734,8 +3818,9 @@ const Editor = {
     if (this.group) { this.scene.remove(this.group); disposeObj(this.group); this.group = null; }
     if (this.track) {
       this.group = TrackRenderer.build(this.track, d); this.scene.add(this.group);
+      TerrainFX.setHoles(this.group.userData.holes || []);
       const sz = this.track.bounds().getSize(new V3()); Env.setViewScale(Math.max(sz.x, sz.y * 1.5, sz.z) / 1100);
-    } else Env.setViewScale(1);
+    } else { Env.setViewScale(1); TerrainFX.setHoles([]); }
     if (!fast && Train.design !== d) Train.build(d);
     this.updateHandles();
     if (Settings.d.heatmap && this.lastHeat && this.group && this.lastHeat.length === this.track.N) TrackRenderer.applyHeat(this.group, this.lastHeat);
@@ -4158,6 +4243,7 @@ const Editor = {
     w.append(sec('Track style', styleBtns, el('div', { class: 'hint' }, STYLES[d.style].desc, ' Friction μ = ' + STYLES[d.style].mu + '.')));
     w.append(sec('Layout',
       uiCheck('Closed circuit (loop back to station)', d.closed, v => { d.closed = v; this.commit(); }),
+      uiCheck('Auto tunnels (bore through hills)', d.autoTunnel !== false, v => { d.autoTunnel = v; this.commit(); }, 'When the track dips below the ground, a lined tunnel with portals is built automatically.'),
       uiSlider('Cars per train', 1, 8, 1, d.cars, null, v => v, v => { d.cars = v; Train.design = null; this.commit(); }),
       el('div', { class: 'grid2' },
         el('button', { onclick: () => Modal.confirm('Replace with starter layout?', 'This replaces the current track (undo is available).', 'Replace', () => { d.nodes = Design.starter(d.style).nodes; d.closed = true; this.setSel([]); this.commit(); }) }, icon('sparkle'), 'Starter'),
@@ -4434,11 +4520,13 @@ const Builder = {
       if (p.type === 'brake' || p.type === 'block') v2 = Math.min(v2, tv * tv);
       min = Math.min(min, v2);
     }
-    let under = false;
-    for (const q of g.pts) if (q.y < Terrain.heightAt(q.x, q.z) - 0.4) { under = true; break; }
+    let under = false, depth = 0;
+    for (const q of g.pts) { const dd = Terrain.heightAt(q.x, q.z) - q.y; if (dd > 0.4) under = true; if (dd > depth) depth = dd; }
     const R = Math.abs(g.dy) > 0.01 ? g.L / Math.abs(g.dy) : Infinity, v = Math.sqrt(Math.max(0, v2));
-    return { v, stall: min < 0.5, under, R, latG: isFinite(R) ? v * v / (R * G0) : 0, height: g.end.y - Terrain.groundAt(g.end.x, g.end.z) };
+    return { v, stall: min < 0.5, under, depth, R, latG: isFinite(R) ? v * v / (R * G0) : 0, height: g.end.y - Terrain.groundAt(g.end.x, g.end.z) };
   },
+  // underground pieces are fine when auto tunnels are on (or in Silly Mode); otherwise they are refused
+  blocked() { return !!(this.info && this.info.under && Editor.design.autoTunnel === false && !Settings.d.silly); },
   refresh(follow) {
     if (!this.active) return;
     const d = Editor.design;
@@ -4458,8 +4546,8 @@ const Builder = {
     const mini = { nodes: ctx.concat(g.nodes), style: d.style, closed: false, physics: d.physics };
     const tr = new Track(mini); if (!tr.ok) return;
     const k0 = clamp(Math.round(tr.nodeS[hi] / tr.ds), 0, tr.N - 2);
-    const bad = this.info.under && !Settings.d.silly, warn = this.info.stall;
-    const col = bad ? 0xff3b5c : warn ? 0xffa53a : 0x3fe0d0;
+    const bad = this.blocked(), warn = this.info.stall, tun = this.info.under && !bad;
+    const col = bad ? 0xff3b5c : warn ? 0xffa53a : tun ? 0xa392ff : 0x3fe0d0;
     const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthWrite: false });
     mat.color.multiplyScalar(1.6);
     const grp = new THREE.Group(), ks = TrackRenderer.ringList(tr, 1, k0, tr.N - 1, false), inv = d.style === 'inverted';
@@ -4518,7 +4606,7 @@ const Builder = {
   build() {
     const d = Editor.design, g = this.cur;
     if (!g) return;
-    if (this.info.under && !Settings.d.silly) { Sound.ui('error'); toast('That piece goes underground. Raise the slope or turn on Silly Mode.', 'bad'); return; }
+    if (this.blocked()) { Sound.ui('error'); toast('That piece goes underground. Turn on Auto tunnels in the Track tab, or raise the slope.', 'bad'); return; }
     const head = d.nodes[d.nodes.length - 1], prev = { type: head.type, speed: head.speed, time: head.time };
     head.type = this.p.type; delete head.speed; delete head.time;
     if (this.p.type === 'accel') d.physics.vacuum = true;
@@ -4650,7 +4738,8 @@ const Builder = {
     line('Height', Units.len(i.height));
     if (isFinite(i.R)) line('Radius', Units.len(i.R), i.latG > 2.5 && !this.p.auto ? 'warn' : '');
     if (isFinite(i.R)) line(this.p.auto ? 'Turn G' : 'Lateral', gFmt(this.p.auto ? Math.hypot(1, i.latG) : i.latG) + ' G', i.latG > (this.p.auto ? 4 : 1.8) ? 'warn' : '');
-    if (i.under && !Settings.d.silly) line('!', 'Underground', 'bad msg');
+    if (this.blocked()) line('!', 'Underground', 'bad msg');
+    else if (i.under) line('Tunnel', Units.len(i.depth) + ' deep', 'tun msg');
     else if (i.stall) line('!', 'Too slow: add a lift', 'warn msg');
   }
 };
@@ -4859,16 +4948,22 @@ const Ride = {
     const a = this.first ? 1 : 1 - Math.exp(-dt * 5);
     tr.frameAt(sim.s + sim.offs[0], F); tr.frameAt(sim.s, Fc);
     let fov = 60;
+    // inside a tunnel the camera has to stay inside the bore (no above-ground clamp, no outside fly-by)
+    const sIdx = tr.sampleIdx(sim.s), inTun = !!(tr.tun && (tr.tun[sIdx] || tr.tun[tr.sampleIdx(sim.s - 12)]));
+    this.inTunnel = !!(tr.tun && tr.tun[sIdx]);
+    if (mode === 'flyby' && inTun) mode = 'chase';
     const det = Train.cars[0] && Train.cars[0].getObjectByName('detail');
     if (det) det.visible = mode !== 'ride';
     if (Train.cars[0]) for (const a of Train.cars[0].userData.arms || []) a.visible = mode !== 'ride';
     this.shake = Math.max(0, (this.shake || 0) * Math.exp(-dt * 2.2) - dt * 0.02);
     const tt = performance.now() / 1000;
-    const jolt = (amp, out) => out.set(Math.sin(tt * 37) * Math.sin(tt * 13.3), Math.sin(tt * 41.7) * Math.cos(tt * 17.1), Math.sin(tt * 29.3) * Math.cos(tt * 7.9)).multiplyScalar(amp);
+    // slower, rounder wobble than before (no high-frequency buzz); the shake slider scales everything (1 = the old level)
+    const sk = Settings.d.shake === false ? 0 : (Settings.d.shakeAmt != null ? Settings.d.shakeAmt : 0.3);
+    const jolt = (amp, out) => out.set(Math.sin(tt * 23) * Math.sin(tt * 9.7), Math.sin(tt * 27.5) * Math.cos(tt * 11.3), Math.sin(tt * 17.3) * Math.cos(tt * 6.1)).multiplyScalar(amp);
     if (mode === 'ride') {
       const eye = F.p.clone().addScaledVector(F.u, inv ? -0.95 : 1.6).addScaledVector(F.t, 0.55);
-      if (Gfx.shake() && Settings.d.shake !== false && !sim.done) {
-        const amp = Math.min(0.07, Math.abs(sim.v) * 0.0011) * (sim.design.style === 'wooden' ? 2.2 : 1) + this.shake * 0.12;
+      if (Gfx.shake() && sk > 0 && !sim.done) {
+        const amp = (Math.min(0.07, Math.abs(sim.v) * 0.0011) * (sim.design.style === 'wooden' ? 2.2 : 1) + this.shake * 0.12) * sk;
         jolt(amp, _b); eye.addScaledVector(F.side, _b.x).addScaledVector(F.u, _b.y);
       }
       // orientation is slerped toward the track frame: rock-steady, never jittery, still tight at 600 mph
@@ -4876,15 +4971,16 @@ const Ride = {
       const q = new THREE.Quaternion().setFromRotationMatrix(m);
       if (this.first || !this.camQ) this.camQ = q.clone(); else this.camQ.slerp(q, 1 - Math.exp(-dt * 16));
       cam.position.copy(eye); cam.quaternion.copy(this.camQ); cam.up.copy(F.u);
-      fov = 78 + (this.silly ? Math.min(32, Math.abs(sim.v) / 7) : Math.min(8, Math.abs(sim.v) / 6)) + this.shake * 4;
+      fov = 78 + (this.silly ? Math.min(32, Math.abs(sim.v) / 7) : Math.min(8, Math.abs(sim.v) / 6)) + this.shake * 2 * sk;
     } else if (mode === 'chase') {
-      const want = Fc.p.clone().addScaledVector(Fc.t, -15).addScaledVector(Fc.u, inv ? 1.5 : 5.5).add(new V3(0, 2, 0));
+      const want = inTun ? Fc.p.clone().addScaledVector(Fc.t, -9).addScaledVector(Fc.u, inv ? 0.6 : 2.6)
+        : Fc.p.clone().addScaledVector(Fc.t, -15).addScaledVector(Fc.u, inv ? 1.5 : 5.5).add(new V3(0, 2, 0));
       if (this.first || !this.camVel) { this.camPos.copy(want); this.camVel = new V3(); }
       else smoothDamp(this.camPos, want, this.camVel, Math.abs(sim.v) > 60 ? 0.12 : 0.35, dt);   // critically damped spring
-      const gy = Terrain.groundAt(this.camPos.x, this.camPos.z) + 1.2; if (this.camPos.y < gy) this.camPos.y = gy;
+      if (!inTun) { const gy = Terrain.groundAt(this.camPos.x, this.camPos.z) + 1.2; if (this.camPos.y < gy) this.camPos.y = gy; }
       this.camUp.lerp(_a.copy(Fc.u).lerp(UPV, 0.6), a).normalize();
       const look = Fc.p.clone().addScaledVector(Fc.t, 4);
-      if (this.shake > 0.01) look.add(jolt(this.shake * 0.6, _b));
+      if (this.shake > 0.01) look.add(jolt(this.shake * 0.6 * Math.max(0.4, sk), _b));
       cam.position.copy(this.camPos); cam.up.copy(this.camUp); cam.lookAt(look);
       fov = 65;
     } else if (mode === 'orbit') {
@@ -4914,7 +5010,7 @@ const Ride = {
     const focus = this.placeCamera(this.cams[this.cam], sim, dt, R.camera);
     // sound
     { const cp = R.camera.position, d = cp.distanceTo(focus), rt = _a.setFromMatrixColumn(R.camera.matrixWorld, 0), pan = d > 0.01 ? _b.copy(focus).sub(cp).dot(rt) / d : 0;
-      Sound.ride(sim.v, !sim.done, dt * mul, sim.onLift, { dist: this.cams[this.cam] === 'ride' ? 0 : d, pan, style: sim.design.style }); }
+      Sound.ride(sim.v, !sim.done, dt * mul, sim.onLift, { dist: this.cams[this.cam] === 'ride' ? 0 : d, pan, style: sim.design.style, tunnel: this.inTunnel }); }
     if (!this.boomed && Math.abs(sim.v) > 343) { this.boomed = true; Sound.boom(); this.shake = 1.5; this.hudMsg(this.silly ? 'SONIC BOOM! The windows of three towns just exploded.' : 'Sonic boom!', 'silly'); }
     if (!sim.done) {
       const lvl = Math.max(sim.vG - 3.2, 0.15 - sim.vG, Math.abs(sim.lat) - 1.2);
@@ -5247,7 +5343,7 @@ const App = {
         uiCheck('Show FPS counter', S.showFps, v => { S.showFps = v; save(); $('#fps').classList.toggle('hidden', !v); })),
       sec('Controls', uiSlider('Camera sensitivity', 0.3, 2.5, 0.05, S.camSens, v => { S.camSens = v; save(); }, v => v.toFixed(2) + '×'),
         uiCheck('Invert vertical orbit', S.invertOrbit, v => { S.invertOrbit = v; save(); }),
-        uiCheck('Ride camera shake', S.shake !== false, v => { S.shake = v; save(); })),
+        uiSlider('Ride camera shake', 0, 1.5, 0.05, S.shake === false ? 0 : (S.shakeAmt != null ? S.shakeAmt : 0.3), v => { S.shakeAmt = v; S.shake = true; save(); }, v => Math.round(v * 100) + '%')),
       sec('Units', uiSelect('Unit system', [['imperial', 'Imperial (mph, ft)'], ['metric', 'Metric (km/h, m)']], S.units, v => { S.units = v; save(); if (Editor.design) { Editor.renderPanel(); Editor.updateBottomBar(); } })),
       sec('Sound', ...[['volume', 'Master', 0.6], ['musicVol', 'Music', 0.5], ['sfxVol', 'Effects', 0.9], ['ambVol', 'Ambience', 0.7], ['uiVol', 'Interface', 0.6]].map(([k, l, d]) =>
         uiSlider(l, 0, 1, 0.05, S[k] != null ? S[k] : d, v => { S[k] = v; save(); Sound.setVolume(); }, v => Math.round(v * 100) + '%')),
