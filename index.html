@@ -167,9 +167,9 @@ kbd{display:inline-block;background:rgba(255,255,255,.08);border:1px solid rgba(
 .tile.silly{border-color:rgba(255,79,216,.55);background:linear-gradient(180deg,#46205a,#241238)}
 .tile .pc{width:100%;height:3px;margin-top:-2px}
 .bconsole{display:flex;gap:10px;align-items:stretch;width:100%;min-width:0}
-#dock.builder{height:214px;left:76px}
-body.building #ratingCard{bottom:240px}
-body.building #statusLine{bottom:372px}
+#dock.builder{height:228px;left:76px}
+body.building #ratingCard{bottom:254px}
+body.building #statusLine{bottom:386px}
 
 #dock.builder #dockTiles{overflow:visible;padding-top:6px}
 .btypes{display:grid;grid-template-columns:1fr 1fr;gap:4px;width:214px;flex-shrink:0;align-content:start}
@@ -191,7 +191,8 @@ body.building #statusLine{bottom:372px}
 .bsnap{font-size:10.5px!important;letter-spacing:.08em!important;padding:6px 0!important}
 .bread{display:grid;grid-template-columns:1fr 1fr;gap:1px 8px;font:600 11px var(--fd);letter-spacing:.05em}
 .bread div{display:flex;justify-content:space-between;gap:4px;color:var(--ink2)}
-.bread b{color:#fff}.bread .warn,.bread .warn b{color:var(--warn)}.bread .bad,.bread .bad b{color:var(--bad)}
+.bread b{color:#fff}.bread .warn,.bread .warn b{color:var(--warn)}
+.bread .msg{grid-column:1/-1;justify-content:flex-start!important}.bread .bad,.bread .bad b{color:var(--bad)}
 .bkeys{display:flex;align-items:center;gap:5px;font:600 11px var(--fd);letter-spacing:.06em;color:var(--ink3);white-space:nowrap}
 .bkeys kbd{font-size:10px;padding:0 4px}
 @media (max-width:1300px){.bkeys{display:none}}
@@ -404,6 +405,31 @@ body.title #menu{display:none!important}
 #pause .pbox{display:flex;flex-direction:column;gap:6px;min-width:300px;padding:26px 30px;align-items:stretch;animation:modalIn .35s var(--spring);--ch:18px;position:relative}
 #pause h2{margin:0 0 14px;font:700 34px var(--fd);letter-spacing:.3em;text-align:center}
 #pause .mnav{font-size:22px;padding:8px 14px}
+
+/* builder dots — four round buttons around the end of the unbuilt piece */
+#buildDots{position:fixed;left:0;top:0;z-index:12;width:0;height:0;will-change:transform;transition:opacity .25s var(--eo)}
+#buildDots.off{opacity:0;pointer-events:none}
+#buildDots .bdcenter{position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px rgba(63,224,208,.35),0 0 14px #3fe0d0}
+.bdot{position:absolute;width:42px;height:42px;margin:-21px 0 0 -21px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;
+  background:radial-gradient(circle at 35% 30%,#2e4a80,#121d38 70%);border:2px solid rgba(255,255,255,.85);box-shadow:0 4px 14px rgba(0,0,0,.55),0 0 0 4px rgba(10,18,34,.45);
+  transition:transform .3s var(--spring),box-shadow .2s,background .2s;touch-action:none}
+.bdot svg.ic{width:20px;height:20px}
+.bdot.bd-bank{left:0;top:-68px}.bdot.bd-slope{left:68px;top:0}.bdot.bd-len{left:0;top:68px}.bdot.bd-curve{left:-68px;top:0}
+.bdot:hover{transform:scale(1.18);box-shadow:0 6px 18px rgba(0,0,0,.6),0 0 0 4px rgba(63,224,208,.5),0 0 22px rgba(63,224,208,.6)}
+.bdot.drag{transform:scale(1.25);background:radial-gradient(circle at 35% 30%,#4af0e0,#16a99c 70%);color:#02201d;box-shadow:0 0 0 5px rgba(63,224,208,.35),0 0 30px rgba(63,224,208,.9)}
+#buildDots.dragging .bdot:not(.drag){opacity:.25;transform:scale(.85)}
+.bdot .chev{position:absolute;width:0;height:0;border:6px solid transparent;opacity:.0;transition:opacity .2s,transform .3s var(--eo)}
+.bdot.ax-x .c1{left:-15px;border-right-color:#fff}.bdot.ax-x .c2{right:-15px;border-left-color:#fff}
+.bdot.ax-y .c1{top:-15px;border-bottom-color:#fff}.bdot.ax-y .c2{bottom:-15px;border-top-color:#fff}
+.bdot:hover .chev,.bdot.drag .chev{opacity:.95}
+.bdot.ax-x:hover .c1,.bdot.ax-x.drag .c1{transform:translateX(-3px)}.bdot.ax-x:hover .c2,.bdot.ax-x.drag .c2{transform:translateX(3px)}
+.bdot.ax-y:hover .c1,.bdot.ax-y.drag .c1{transform:translateY(-3px)}.bdot.ax-y:hover .c2,.bdot.ax-y.drag .c2{transform:translateY(3px)}
+.bdot .blab{position:absolute;top:46px;left:50%;transform:translateX(-50%);font:700 10.5px var(--fd);letter-spacing:.16em;text-transform:uppercase;white-space:nowrap;color:#fff;text-shadow:0 1px 3px #000,0 0 8px rgba(0,0,0,.8);opacity:0;transition:opacity .2s;pointer-events:none}
+.bdot:hover .blab,.bdot.drag .blab{opacity:1}
+.bdot.bd-bank .blab{top:auto;bottom:46px}
+#buildDots .bdval{position:absolute;left:0;top:118px;transform:translateX(-50%);padding:6px 14px;white-space:nowrap;font:700 15px var(--fd);letter-spacing:.1em;background:rgba(4,10,22,.9);border:1px solid var(--cyan);box-shadow:0 0 18px rgba(63,224,208,.35);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%)}
+body.dotdrag,body.dotdrag *{cursor:none!important}
+body.photo #buildDots{display:none!important}
 </style>
 </head>
 <body>
@@ -495,6 +521,7 @@ body.title #menu{display:none!important}
 <div id="nodeWidget" class="glass off"></div>
 <div id="radial" class="hidden"></div>
 <div id="pause" class="hidden"><div class="pbox glass chamfer accent-top"><h2>PAUSED</h2><div id="pauseNav"></div></div></div>
+<div id="buildDots" class="off"></div>
 <div id="toasts"></div>
 <div id="fader"></div>
 <div id="fps" class="hidden"></div>
@@ -638,7 +665,7 @@ const ICONS = {
   path: 'M4 4h7v7H4zM13 13h7v7h-7zM13 4h7v7h-7zM4 13h7v7H4z', fence: 'M4 5v15M12 5v15M20 5v15M2 9h20M2 15h20', lamp: 'M12 22V9M8 22h8M9 4h6l-1 5h-4z',
   shroom: 'M3 12a9 7 0 0 1 18 0zM10 12v8h4v-8', crystal: 'M12 2l5 7-5 13-5-13zM7 9h10', tiki: 'M8 3h8v18H8zM10 8h.01M14 8h.01M10 12h4M10 16h4', tower: 'M6 22V9l6-6 6 6v13M10 22v-5h4v5M9 11h.01M15 11h.01',
   close: 'M6 6l12 12M18 6L6 18', info: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M12 11v6M12 7.5v.5', eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6',
-  ride: 'M3 18h18M5 18l2-6h10l2 6M8 12V8h8v4M10 8V5h4v3', chevL: 'M15 5l-7 7 7 7', chevR: 'M9 5l7 7-7 7', minus: 'M5 12h14', plus: 'M12 5v14M5 12h14', zoom: 'M10 4a6 6 0 1 0 0 12a6 6 0 1 0 0-12M15 15l6 6M10 7v6M7 10h6'
+  ride: 'M3 18h18M5 18l2-6h10l2 6M8 12V8h8v4M10 8V5h4v3', chevL: 'M15 5l-7 7 7 7', updown: 'M12 3v18M7 8l5-5 5 5M7 16l5 5 5-5', ramp: 'M3 20h18L21 6zM8 20v-2.5', chevR: 'M9 5l7 7-7 7', minus: 'M5 12h14', plus: 'M12 5v14M5 12h14', zoom: 'M10 4a6 6 0 1 0 0 12a6 6 0 1 0 0-12M15 15l6 6M10 7v6M7 10h6'
 };
 function icon(name, size) {
   const d = ICONS[name] || ICONS.info, ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg');
@@ -4453,7 +4480,6 @@ const Builder = {
     line.computeLineDistances(); grp.add(line);
     const ring = new THREE.Mesh(new THREE.RingGeometry(1.2, 1.5, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthWrite: false }));
     ring.position.set(g.end.x, gy + 0.08, g.end.z); grp.add(ring); this.ring = ring;
-    this.drawHandles(g, grp);
     R.scene.add(grp); this.ghost = grp;
   },
   follow(g) {
@@ -4470,8 +4496,8 @@ const Builder = {
     }
   },
   update(dt) {
+    this.updateDots(dt);
     if (!this.active || !this.arrow) return;
-    this.scaleHandles();
     this.pulse += dt;
     const s = 1 + Math.sin(this.pulse * 5) * 0.12; this.arrow.scale.setScalar(s);
     if (this.ring) { this.ring.scale.setScalar(1 + (this.pulse * 0.8) % 1 * 0.8); this.ring.material.opacity = 0.6 * (1 - (this.pulse * 0.8) % 1); }
@@ -4567,7 +4593,7 @@ const Builder = {
   },
   renderConsole(tabsEl, tiles) {
     const silly = Settings.d.silly;
-    tabsEl.append(el('div', { class: 'opts' }, el('span', { class: 'bkeys' }, 'drag the handles or', el('kbd', null, '←→'), 'curve', el('kbd', null, '↑↓'), 'slope', el('kbd', null, 'Z X'), 'bank', el('kbd', null, '[ ]'), 'length', el('kbd', null, 'Enter'), 'build')));
+    tabsEl.append(el('div', { class: 'opts' }, el('span', { class: 'bkeys' }, 'drag the dots or', el('kbd', null, '←→'), 'curve', el('kbd', null, '↑↓'), 'slope', el('kbd', null, 'Z X'), 'bank', el('kbd', null, '[ ]'), 'length', el('kbd', null, 'Enter'), 'build')));
     const wrap = el('div', { class: 'bconsole' });
     const types = el('div', { class: 'btypes' });
     const pic = { track: 'straight', station: 'station', lift: 'lift', brake: 'brake', block: 'block', launch: 'launch', accel: 'rocket' };
@@ -4598,7 +4624,7 @@ const Builder = {
         el('button', { 'data-tip': 'Reset to a straight, level piece', 'data-key': 'R', onclick: () => { Object.assign(this.p, { curve: 0, slope: 0, bank: 0 }); this.refresh(true); this.syncConsole(); } }, icon('restart', 15)),
         el('button', { 'data-tip': 'Complete circuit: link back to the station', onclick: () => this.complete() }, icon('flag', 15)),
         auto),
-      el('button', { class: 'bsnap', 'data-tip': 'Angle snap for the drag handles (hold Ctrl to drag freely)', 'data-key': 'G', onclick: () => this.cycleSnap() }, icon('grid', 14), el('span', null, this.snap ? 'Snap ' + this.snap + '°' : 'Snap off')),
+      el('button', { class: 'bsnap', 'data-tip': 'Angle snap for the dots (hold Ctrl while dragging for free angles)', 'data-key': 'G', onclick: () => this.cycleSnap() }, icon('grid', 14), el('span', null, this.snap ? 'Snap ' + this.snap + '°' : 'Snap off')),
       read));
     tiles.append(wrap);
     this.updateReadout();
@@ -4624,8 +4650,8 @@ const Builder = {
     line('Height', Units.len(i.height));
     if (isFinite(i.R)) line('Radius', Units.len(i.R), i.latG > 2.5 && !this.p.auto ? 'warn' : '');
     if (isFinite(i.R)) line(this.p.auto ? 'Turn G' : 'Lateral', gFmt(this.p.auto ? Math.hypot(1, i.latG) : i.latG) + ' G', i.latG > (this.p.auto ? 4 : 1.8) ? 'warn' : '');
-    if (i.under && !Settings.d.silly) line('!', 'Underground', 'bad');
-    else if (i.stall) line('!', 'Too slow: add a lift', 'warn');
+    if (i.under && !Settings.d.silly) line('!', 'Underground', 'bad msg');
+    else if (i.stall) line('!', 'Too slow: add a lift', 'warn msg');
   }
 };
 
@@ -4700,112 +4726,77 @@ const NodeWidget = {
 };
 
 /* =====================================================================
-   BUILDER DRAG HANDLES (Planet Coaster 2 style): four gizmos on the end of
-   the ghost piece. Drag them in the world to shape the piece; angles snap.
+   BUILDER DOTS (Planet Coaster style): four round buttons orbit the end of the
+   unbuilt piece, clockwise from the top: Bank (twist), Slope, Length, Curve.
+   Click a dot and drag in its direction; angles snap unless Ctrl is held.
    ===================================================================== */
 Object.assign(Builder, {
-  snap: 15, hdrag: null, hoverH: null, hgrp: null,
-  SNAPS: [0, 5, 15, 22.5, 45],
-  hmat(color) { this._hm = this._hm || {}; if (!this._hm[color]) { const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false }); m.color.multiplyScalar(1.5); m.userData.shared = true; this._hm[color] = m; } return this._hm[color]; },
-  handleGeo() {
-    if (this._ag) return this._ag;
-    const shaft = new THREE.CylinderGeometry(0.11, 0.11, 1.5, 10).translate(0, 0.75, 0), cone = new THREE.ConeGeometry(0.42, 0.9, 16).translate(0, 1.95, 0);
-    this._ag = mergeParts([{ geo: shaft, color: 0xffffff }, { geo: cone, color: 0xffffff }]); this._ag.userData.shared = true; return this._ag;
-  },
-  frameAtEnd(g) {
-    const dir = g.endDir.clone().normalize();
-    const right = new V3(-dir.z, 0, dir.x); if (right.lengthSq() < 1e-4) right.set(-Math.sin(this.head.yaw), 0, Math.cos(this.head.yaw)); right.normalize();
-    const U0 = UPV.clone().addScaledVector(dir, -dir.y); if (U0.lengthSq() < 1e-4) U0.copy(right).cross(dir); U0.normalize();
-    const S0 = new V3().crossVectors(U0, dir);
-    return { dir, right, U0, S0 };
-  },
-  drawHandles(g, parent) {
-    const f = this.frameAtEnd(g), grp = new THREE.Group(); grp.position.copy(g.end);
-    // curve/slope arrows start outside the bank ring so no two handles ever overlap
-    const arrow = (dirv, color, key, off = 3.0) => { const m = new THREE.Mesh(this.handleGeo(), this.hmat(color)); m.quaternion.setFromUnitVectors(UPV, dirv.clone().normalize()); m.position.copy(dirv).normalize().multiplyScalar(off); m.renderOrder = 12; m.userData.key = key; grp.add(m); return m; };
-    arrow(f.dir, 0xff9a3d, 'len', 1.0);
-    arrow(f.right, 0x3fe0d0, 'curve'); arrow(f.right.clone().negate(), 0x3fe0d0, 'curve');
-    arrow(UPV.clone(), 0x5cf08f, 'slope'); arrow(UPV.clone().negate(), 0x5cf08f, 'slope');
-    const ring = new THREE.Mesh(this._tor || (this._tor = Object.assign(new THREE.TorusGeometry(2.4, 0.07, 8, 48), { userData: { shared: true } })), this.hmat(0xff4fd8)); ring.renderOrder = 12;
-    ring.quaternion.setFromUnitVectors(new V3(0, 0, 1), f.dir); grp.add(ring);
-    const b = (this.p.auto ? (this.head ? 0 : 0) : this.p.bank) * D2R, kv = f.U0.clone().multiplyScalar(Math.cos(b)).addScaledVector(f.S0, Math.sin(b));
-    const knob = new THREE.Mesh(this._kn || (this._kn = Object.assign(new THREE.SphereGeometry(0.42, 16, 12), { userData: { shared: true } })), this.hmat(0xff4fd8)); knob.position.copy(kv).multiplyScalar(2.4); knob.renderOrder = 13; knob.userData.key = 'bank'; grp.add(knob);
-    parent.add(grp); this.hgrp = grp; this.hf = f; this.hkv = kv;
-    this.scaleHandles();
-  },
-  scaleHandles() {
-    if (!this.hgrp) return;
-    const sc = clamp(R.camera.position.distanceTo(this.hgrp.position) / 42, 0.55, 40); this.hgrp.scale.setScalar(sc); this.hsc = sc;
-  },
-  // screen-space anchors used for picking
-  anchors() {
-    if (!this.hgrp || !this.cur) return [];
-    const e = this.cur.end, f = this.hf, s = this.hsc || 1, out = [];
-    const add = (key, v, d) => { const p = Editor.project(e.x + v.x * d * s, e.y + v.y * d * s, e.z + v.z * d * s); if (p) out.push({ key, x: p[0], y: p[1] }); };
-    add('len', f.dir, 2.6); add('curve', f.right, 4.3); add('curve', f.right.clone().negate(), 4.3); add('slope', UPV, 4.3); add('slope', UPV.clone().negate(), 4.3); add('bank', this.hkv, 2.4);
-    return out;
-  },
-  pickHandle(mx, my) {
-    let best = null, bd = 30;
-    for (const a of this.anchors()) { const d = Math.hypot(a.x - mx, a.y - my); if (d < bd) { bd = d; best = a.key; } }
-    return best;
-  },
-  setHover(k) {
-    if (k === this.hoverH) return; this.hoverH = k;
-    if (this.hgrp) this.hgrp.children.forEach(c => { const key = c.userData.key || (c.geometry === this._tor ? 'bank' : null); c.scale.setScalar(key && key === k ? 1.3 : 1); });
-    R.renderer.domElement.classList.toggle('hov', !!k);
-    if (k) Sound.ui('hover');
-  },
+  snap: 15, SNAPS: [0, 5, 7.5, 15, 22.5, 45], ddrag: null, dpos: null,
+  DOTS: [
+    { k: 'bank', label: 'Bank', icon: 'roll', axis: 'x', pos: [0, -1], hint: 'drag ← → to twist' },
+    { k: 'slope', label: 'Slope', icon: 'ramp', axis: 'y', pos: [1, 0], hint: 'drag ↑ ↓ to tilt' },
+    { k: 'len', label: 'Length', icon: 'updown', axis: 'y', pos: [0, 1], hint: 'drag ↑ ↓ to lengthen' },
+    { k: 'curve', label: 'Curve', icon: 'turn', axis: 'x', pos: [-1, 0], hint: 'drag ← → to curve' }
+  ],
+  // world-space handles are replaced by screen dots; keep the hooks inert
+  drawHandles() { }, scaleHandles() { }, anchors() { return []; },
+  onDown() { return false; }, onMove() { return false; }, onUp() { return false; },
   snapA(v, ev) { const st = ev && (ev.ctrlKey || ev.metaKey) ? 0 : this.snap; return st ? Math.round(v / st) * st : Math.round(v); },
-  onDown(e) {
-    if (!this.active || e.button !== 0) return false;
-    const k = this.pickHandle(e.clientX, e.clientY); if (!k) return false;
-    this.hdrag = { k, mx: e.clientX, my: e.clientY, p: Object.assign({}, this.p), head: Object.assign({}, this.head, { pos: this.head.pos.clone() }), end: this.cur.end.clone(), f: this.hf };
-    if (k === 'bank' && this.p.auto) { this.p.auto = false; this.hdrag.p.bank = 0; }
-    Sound.ui('select'); return true;
-  },
-  onMove(e) {
-    if (!this.active) return false;
-    const mx = e.clientX, my = e.clientY, D = this.hdrag;
-    if (!D) { this.setHover(this.pickHandle(mx, my)); return !!this.hoverH; }
-    const ray = Editor.ray(mx, my), h = D.head, hit = new V3();
-    let k = D.k, v;
-    if (k === 'len') {
-      const a = Editor.project(D.end.x, D.end.y, D.end.z), b = Editor.project(D.end.x + D.f.dir.x, D.end.y + D.f.dir.y, D.end.z + D.f.dir.z);
-      let along;
-      if (a && b && Math.hypot(b[0] - a[0], b[1] - a[1]) > 2) { const sx = b[0] - a[0], sy = b[1] - a[1], ppm = Math.hypot(sx, sy); along = ((mx - D.mx) * sx + (my - D.my) * sy) / (ppm * ppm); }
-      else along = -(my - D.my) * 0.15;
-      v = D.p.len + along; v = e.ctrlKey || !this.snap ? +v.toFixed(1) : Math.round(v);
-      this.p.len = clamp(v, ...this.limits().len);
-    } else if (k === 'curve') {
-      if (ray.intersectPlane(new THREE.Plane(UPV, -h.pos.y), hit)) {
-        let bear = Math.atan2(hit.z - h.pos.z, hit.x - h.pos.x) - h.yaw; bear = Math.atan2(Math.sin(bear), Math.cos(bear));
-        if (Math.hypot(hit.x - h.pos.x, hit.z - h.pos.z) > 2) this.p.curve = clamp(this.snapA(bear * 2 / D2R, e), -180, 180);   // an arc's chord bears half its turn
-      }
-    } else if (k === 'slope') {
-      const n = D.f.right.clone(); let ty = null;
-      if (Math.abs(ray.direction.dot(n)) > 0.15 && ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(n, D.end), hit)) ty = hit.y;
-      else ty = D.end.y - (my - D.my) * 0.12 * (this.hsc || 1);
-      const L = this.p.len, p0 = h.pitch, gain = p1 => Math.abs(p1 - p0) < 1e-5 ? L * Math.sin(p0) : L * (Math.cos(p0) - Math.cos(p1)) / (p1 - p0);
-      let lo = -89 * D2R, hi = 89 * D2R; const want = ty - h.pos.y;
-      for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (gain(m) < want) lo = m; else hi = m; }
-      this.p.slope = clamp(this.snapA(lo / D2R, e), -89, 89);
-    } else if (k === 'bank') {
-      const f = D.f;
-      if (Math.abs(ray.direction.dot(f.dir)) > 0.1 && ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(f.dir, D.end), hit)) {
-        const r = hit.sub(D.end); this.p.bank = wrapDeg(this.snapA(Math.atan2(r.dot(f.S0), r.dot(f.U0)) / D2R, e));
-      } else this.p.bank = wrapDeg(this.snapA(D.p.bank - (mx - D.mx) * 0.5, e));
-      this.p.auto = false;
+  buildDots() {
+    const w = $('#buildDots'); if (!w || w.dataset.built) return; w.dataset.built = '1';
+    w.append(el('div', { class: 'bdcenter' }));
+    for (const d of this.DOTS) {
+      const b = el('div', { class: 'bdot bd-' + d.k + ' ax-' + d.axis, 'data-k': d.k },
+        el('span', { class: 'ring' }), icon(d.icon), el('span', { class: 'chev c1' }), el('span', { class: 'chev c2' }), el('span', { class: 'blab' }, d.label));
+      b.addEventListener('pointerdown', e => this.dotDown(e, d));
+      b.addEventListener('pointerenter', () => { if (!this.ddrag) Sound.ui('hover'); });
+      w.append(b);
     }
-    if (this._lastSig !== JSON.stringify(this.p)) { this._lastSig = JSON.stringify(this.p); this.refresh(false); this.syncConsole(); Sound.ui('tick'); }
-    const info = $('#cursorInfo'); info.classList.remove('hidden'); info.style.left = mx + 'px'; info.style.top = my + 'px';
-    info.textContent = { len: 'LENGTH ', curve: 'CURVE ', slope: 'SLOPE ', bank: 'BANK ' }[k] + this.fmt(k, this.p[k]) + (this.snap && !e.ctrlKey ? '  ·  snap ' + this.snap + '°' : '  ·  free');
-    return true;
+    w.append(el('div', { class: 'bdval hidden' }));
+    window.addEventListener('pointermove', e => this.dotMove(e));
+    window.addEventListener('pointerup', e => this.dotUp(e));
   },
-  onUp() {
-    if (!this.hdrag) return false;
-    this.hdrag = null; $('#cursorInfo').classList.add('hidden');
-    this.refresh(true); Sound.ui('place'); return true;
+  dotDown(e, d) {
+    if (e.button !== 0) return; e.preventDefault(); e.stopPropagation();
+    this.ddrag = { d, x: e.clientX, y: e.clientY, p: Object.assign({}, this.p) };
+    if (d.k === 'bank' && this.p.auto) { this.p.auto = false; this.ddrag.p.bank = Math.round(this.head ? 0 : 0); }
+    $('#buildDots').classList.add('dragging'); $('#buildDots').querySelector('.bd-' + d.k).classList.add('drag');
+    document.body.classList.add('dotdrag');
+    Sound.ui('select');
+  },
+  dotMove(e) {
+    const D = this.ddrag; if (!D) return;
+    const dx = e.clientX - D.x, dy = e.clientY - D.y, k = D.d.k, P = D.p;
+    // mouse sensitivity follows how far away the camera is, so drags feel the same at any zoom
+    let v;
+    if (k === 'bank') v = wrapDeg(this.snapA(P.bank - dx * 0.45, e));
+    else if (k === 'slope') v = clamp(this.snapA(P.slope - dy * 0.35, e), -180, 180);
+    else if (k === 'curve') v = clamp(this.snapA(P.curve + dx * 0.4, e), -180, 180);
+    else { const raw = P.len - dy * 0.12 * clamp(Cam.dist / 60, 0.5, 30); v = e.ctrlKey || !this.snap ? +raw.toFixed(1) : Math.round(raw); v = clamp(v, ...this.limits().len); }
+    if (k === 'bank') this.p.auto = false;
+    if (this.p[k] !== v) { this.p[k] = v; this.refresh(false); this.syncConsole(); Sound.ui('tick'); }
+    const val = $('#buildDots .bdval'); val.classList.remove('hidden');
+    val.textContent = D.d.label.toUpperCase() + '  ' + this.fmt(k, this.p[k]) + (this.snap && !e.ctrlKey && k !== 'len' ? '   ·  ' + this.snap + '° snap' : '');
+  },
+  dotUp() {
+    if (!this.ddrag) return;
+    $('#buildDots').classList.remove('dragging'); $('#buildDots').querySelectorAll('.bdot').forEach(b => b.classList.remove('drag'));
+    document.body.classList.remove('dotdrag'); $('#buildDots .bdval').classList.add('hidden');
+    this.ddrag = null; this.refresh(true); Sound.ui('place');
+  },
+  // keep the dot diamond glued to the end of the ghost piece on screen
+  updateDots(dt) {
+    const w = $('#buildDots'); if (!w) return;
+    const show = this.active && App.state === 'editor' && this.cur && !Modal.isOpen && !document.body.classList.contains('photo');
+    let p = null;
+    if (show) p = Editor.project(this.cur.end.x, this.cur.end.y, this.cur.end.z);
+    if (!show || !p) { w.classList.add('off'); return; }
+    this.buildDots(); w.classList.remove('off');
+    const x = clamp(p[0], 70, innerWidth - 70), y = clamp(p[1], 80, innerHeight - 80);
+    if (!this.dpos || this.ddrag) this.dpos = { x, y };
+    else { const a = 1 - Math.exp(-dt * 22); this.dpos.x += (x - this.dpos.x) * a; this.dpos.y += (y - this.dpos.y) * a; }
+    if (this.ddrag) return;   // while dragging, the dots stay where the drag started
+    w.style.transform = `translate3d(${this.dpos.x.toFixed(1)}px,${this.dpos.y.toFixed(1)}px,0)`;
   },
   cycleSnap() { const i = this.SNAPS.indexOf(this.snap); this.snap = this.SNAPS[(i + 1) % this.SNAPS.length]; this.syncConsole(); Sound.ui('tick'); toast(this.snap ? 'Angle snap: ' + this.snap + '°' : 'Angle snap off'); }
 });
@@ -5120,7 +5111,7 @@ const App = {
     setTimeout(() => { $('#loading').classList.add('fade'); setTimeout(() => $('#loading').classList.add('hidden'), 700); }, 250);
   },
   setState(s) {
-    const prev = this.state; this.state = s; Sound.setScene(s); $('#pause').classList.add('hidden');
+    const prev = this.state; this.state = s; Sound.setScene(s); $('#pause').classList.add('hidden'); if (s !== 'editor') $('#buildDots').classList.add('off');
     if (prev !== s) {
       // fade up from black and slide the interface in
       const f = $('#fader'); if (f && this._booted) f.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 520, easing: 'cubic-bezier(.16,1,.3,1)' });
