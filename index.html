@@ -51,7 +51,7 @@ input[type=range]{-webkit-appearance:none;appearance:none;height:6px;padding:0;b
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:18px;background:linear-gradient(180deg,#fff,#cfe9ff);border:1px solid #0a1a2e;transform:skewX(-12deg);box-shadow:0 0 10px rgba(63,224,208,.6)}
 input[type=range]::-moz-range-thumb{width:12px;height:16px;background:#fff;border:1px solid #0a1a2e;border-radius:0}
 input[type=range]:disabled{opacity:.4}
-.switch{position:relative;width:38px;height:20px;flex-shrink:0}
+.switch,.field label.switch{position:relative;width:38px;height:20px;flex-shrink:0}
 .switch input{opacity:0;width:0;height:0;position:absolute}
 .switch i{position:absolute;inset:0;background:rgba(255,255,255,.1);border:1px solid var(--edge);border-radius:12px;transition:.18s;cursor:pointer}
 .switch i::after{content:'';position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#9fb0cc;transition:.18s}
@@ -1063,7 +1063,7 @@ const Env = {
     const s = this.sun.shadow, size = Gfx.shadowSize(), box = Gfx.shadowBox();
     if (s.mapSize.x !== size) { s.mapSize.set(size, size); if (s.map) { s.map.dispose(); s.map = null; } }
     const c = s.camera; c.left = -box; c.right = box; c.top = box; c.bottom = -box; c.near = 10; c.far = 1400; c.updateProjectionMatrix();
-    s.bias = -0.0004; s.normalBias = 0.5; s.radius = Gfx.lv() >= 5 ? 3 : 2;
+    s.bias = -0.0006; s.normalBias = 0.9; s.radius = Gfx.lv() >= 5 ? 3 : 2;
   },
   setWeather(w) {
     this.weather = w;
@@ -1092,6 +1092,7 @@ const Env = {
     if (!(typeof Post !== 'undefined' && Post.enabled)) R.scene.fog.color.convertLinearToSRGB();
     this.fogNear = fog ? 6 : 380; this.fogFar = fog ? 260 : 2300; this.applyFog();
     this.sunDir = sd;
+    this.sun.castShadow = e > 0.13;   // grazing light only produces long shadow streaks, so skip it near the horizon
     if (e > -0.04) {
       this.sun.color.set(0xfff6ea).lerp(C(0xff9a50), sunset * 0.85);
       this.sun.intensity = (fog ? 0.6 : 2.0) * clamp((e + 0.04) * 5, 0, 1);
@@ -4098,10 +4099,10 @@ const Attract = {
   sim: null, t: 0, mode: 0,
   start() {
     const s = Samples.list()[0], d = Design.validate(Design.clone(s.design));
-    d.env = { time: 17.6, weather: 'sunny', cycle: false };
+    d.env = { time: 16.3, weather: 'sunny', cycle: false };
     Editor.load(d);
     Scenery.rnd = mulberry32(11); Scenery.scatter(70, Editor.track); Scenery.add('tower', -60, 30); Scenery.add('lamp', -84, -46); Scenery.rebuild();
-    Env.time = 17.4; Env.apply();
+    Env.time = 16.3; Env.apply();
     this.restart(); this.t = 0; this.mode = 0; Ride.first = true;
     const a = Design.analyze(d, false), f = $('#menuFeature');
     if (a && f) {
